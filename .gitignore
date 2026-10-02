@@ -1,0 +1,30 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+target
+
+# macOS変換ヘルパーの生成物 (`npm run build:helper` で作る)
+src-tauri/binaries/fm-helper-*
+# 署名前の中間ファイル
+src-tauri/resources/shortcuts/*.unsigned.shortcut
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

@@ -1,0 +1,1 @@
+// Microsoft Store課金 (MVP後。置き場所のみ)

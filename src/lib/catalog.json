@@ -1,0 +1,10 @@
+{
+  "apps": [
+    { "id": "claude", "name": "Claude", "color": "#E8845C" },
+    { "id": "chatgpt", "name": "ChatGPT", "color": "#5FA97A" },
+    { "id": "slack", "name": "Slack", "color": "#7A8FF0" },
+    { "id": "discord", "name": "Discord", "color": "#8B7CF6" },
+    { "id": "calendar", "name": "カレンダー", "color": "#E8B84B" },
+    { "id": "mail", "name": "メール", "color": "#7FC4C4" }
+  ]
+}

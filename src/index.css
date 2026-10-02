@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* DESIGN.md のテーマ: 少し暖かい背景、真っ黒にしない foreground、薄い border */
+@theme {
+  --color-background: #faf9f7;
+  --color-card: #ffffff;
+  --color-surface-muted: #f3f1ee;
+
+  --color-foreground: #29272d;
+  --color-muted-foreground: #88838d;
+
+  --color-primary: #745de8;
+  --color-primary-soft: #eeeaff;
+
+  --color-border: #e7e3de;
+
+  /* 角は柔らかく (small 10 / button 13 / card 18 / panel 22) */
+  --radius-sm: 10px;
+  --radius-md: 13px;
+  --radius-lg: 18px;
+  --radius-xl: 22px;
+}
+
+.dark {
+  --color-background: #211f26;
+  --color-card: #2a2831;
+  --color-surface-muted: #322f3a;
+
+  --color-foreground: #ece9e4;
+  --color-muted-foreground: #a09aa8;
+
+  --color-primary: #9a86f0;
+  --color-primary-soft: #3a3352;
+
+  --color-border: #3d3a46;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
