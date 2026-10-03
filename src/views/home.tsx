@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PersonaPicker } from "@/components/persona-picker";
@@ -18,17 +19,36 @@ interface Props {
   api: SettingsApi;
   state: FullState;
   personas: Persona[];
+  platform: string;
   speaking: boolean;
   onPreview: () => void;
   onOpenApp: (id: string) => void;
   onPickPersona: (id: string) => void;
 }
 
-export function Home({ api, state, personas, speaking, onPreview, onOpenApp, onPickPersona }: Props) {
+export function Home({ api, state, personas, platform, speaking, onPreview, onOpenApp, onPickPersona }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [axOn, setAxOn] = useState<boolean | null>(null);
   const onCount = KNOWN_APPS.filter((a) => isOn(state, a.id)).length;
   const extraIds = Object.keys(state.enabled).filter((id) => !KNOWN_APPS.some((a) => a.id === id));
   const totalOn = onCount + extraIds.filter((id) => isOn(state, id)).length;
+
+  useEffect(() => {
+    if (platform === "macos") {
+      invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
+    }
+  }, [platform]);
+
+  const requestAx = async () => {
+    const ok = await invoke<boolean>("ax_request_access").catch(() => false);
+    if (ok) {
+      setAxOn(true);
+    } else {
+      await invoke("ax_open_settings").catch(() => {});
+      const recheck = await invoke<boolean>("ax_trusted").catch(() => false);
+      setAxOn(recheck);
+    }
+  };
   const active = personas.find((p) => p.id === state.default_persona);
 
   return (
@@ -175,6 +195,27 @@ export function Home({ api, state, personas, speaking, onPreview, onOpenApp, onP
           今はシステム音声で話します。アプリごとの声は、各アプリの設定で変えられます。
         </p>
       </section>
+
+      {platform === "macos" && (
+        <section aria-label="直接監視" className="mt-5">
+          <h2 className="text-xs font-medium text-muted-foreground">直接監視</h2>
+          <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
+            <p className="text-[13px] font-medium">
+              {axOn ? "通知を直接見ています" : "ショートカット経由で受けています"}
+            </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              {axOn
+                ? "許可済みのため、ショートカットの登録は要りません。"
+                : "許可すると、ショートカットの登録なしで通知が届きます。"}
+            </p>
+            {!axOn && (
+              <Button className="mt-3 w-full" variant="outline" onClick={() => void requestAx()}>
+                通知の直接監視を許可
+              </Button>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

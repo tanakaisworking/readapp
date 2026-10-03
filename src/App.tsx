@@ -106,6 +106,7 @@ function App() {
               api={api}
               state={state}
               personas={personas}
+              platform={platform}
               speaking={speaking}
               onPreview={previewDefault}
               onOpenApp={(id) => setView({ name: "app", appId: id })}

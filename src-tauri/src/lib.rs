@@ -261,6 +261,16 @@ fn get_app_voice(state: State<'_, AppSettings>, app_id: String) -> String {
 
 #[tauri::command]
 fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: String) {
+    // 存在しない声の指定は捨てる (OS既定・プレミアム枠・搭載声のみ受ける)
+    const PREMIUM: [&str; 2] = ["clear", "warm"];
+    let known = voice_id == "system"
+        || PREMIUM.contains(&voice_id.as_str())
+        || speech::system::list_voices()
+            .iter()
+            .any(|v| v.id == voice_id);
+    if !known {
+        return;
+    }
     if let Ok(mut m) = state.voice.lock() {
         m.insert(app_id, voice_id);
     }
@@ -301,6 +311,43 @@ fn set_onboarded(state: State<'_, AppSettings>, done: bool) {
 #[tauri::command]
 fn get_platform() -> String {
     std::env::consts::OS.to_string()
+}
+
+/// アクセシビリティ許可の状態 (macOS直接監視用)。
+#[tauri::command]
+fn ax_trusted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        notifications::ax::trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// プロンプト付きで許可を要求する。初回はシステムダイアログが出る。
+#[tauri::command]
+fn ax_request_access() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        notifications::ax::request_prompt()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+#[tauri::command]
+fn ax_open_settings() {
+    #[cfg(target_os = "macos")]
+    notifications::ax::open_settings();
+}
+
+#[tauri::command]
+fn get_system_voices() -> Vec<speech::system::SystemVoice> {
+    speech::system::list_voices()
 }
 
 #[tauri::command]
@@ -428,7 +475,7 @@ pub(crate) fn speak_notification(
         format!("{}。{}", title, body)
     };
     let text = transform::transform_text(settings, app_id, &raw);
-    speech::system::speak(&text);
+    speech::system::speak(&text, &settings.voice_of(app_id));
     Some(text)
 }
 
@@ -440,7 +487,7 @@ fn handle_notify_url(settings: &AppSettings, url: &url::Url) {
     }
 }
 
-fn record_received(settings: &AppSettings, app_id: &str, title: &str, body: &str) {
+pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str, body: &str) {
     let text = if title.is_empty() {
         body.to_string()
     } else if body.is_empty() {
@@ -486,6 +533,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_platform,
+            ax_trusted,
+            ax_request_access,
+            ax_open_settings,
+            get_system_voices,
             download_shortcut,
             shortcut_installed,
             run_shortcut,
@@ -559,6 +610,11 @@ pub fn run() {
                     handle_notify_url(&settings, &url);
                 }
             });
+            // macOS直接監視を開始 (dmg版。許可済みの場合のみ)。
+            #[cfg(target_os = "macos")]
+            {
+                notifications::ax::start_if_trusted(handle.clone());
+            }
             // Windows: UserNotificationListener を開始 (M2)。
             // 権限ダイアログは初回のみ。要求開始はUIスレッド、完了待ちは別スレッド。
             #[cfg(target_os = "windows")]

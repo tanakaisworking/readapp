@@ -35,11 +35,11 @@ PC上の他アプリの通知を取得し、内容をローカルAIでキャラ�
 
 | 形態 | 通知取得 | 用途 |
 |---|---|---|
+| macOS dmg版 | Accessibility経由の直接監視（許可後すぐ使える）＋ Shortcuts互換 | 自由配信。MAS審査なし |
 | macOS MAS版 | Shortcuts Automation → App Intent | Store配信。オンボーディングはショートカットDL+有効化 |
-| macOS dmg版 | 同上 | 自由配信。MAS審査なし |
 | Windows版 | UserNotificationListener（公式API） | 本来あるべき完成形。権限1回で完結 |
 
-Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）が公式capabilityで、アプリ識別・通知本文・リアルタイムイベントまで公開APIで取得できる。Mac版は同じUI/サービスで、通知取得だけShortcuts経由に差し替える。
+Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）が公式capabilityで、アプリ識別・通知本文・リアルタイムイベントまで公開APIで取得できる。Macのdmg版はAX監視、MAS版はShortcuts経由で、同じUI/サービスに流す。
 
 ## 技術スタック
 

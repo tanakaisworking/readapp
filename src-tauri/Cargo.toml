@@ -38,6 +38,10 @@ windows = { version = "0.62", features = [
     "UI_Notifications_Management",
 ] }
 
+# macOS直接監視 (Accessibility経由) 用。LocalTranslateと同構成。
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

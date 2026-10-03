@@ -31,13 +31,15 @@ export function AppDetail({ api, state, personas, appId, platform, speaking, onB
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [linked, setLinked] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [systemVoices, setSystemVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
   const busy = useRef(false);
 
   useEffect(() => {
-    if (platform === "macos") {
-      invoke<boolean>("shortcut_installed", { appId }).then(setInstalled).catch(() => setInstalled(false));
-    }
-  }, [appId, platform]);
+    invoke<boolean>("shortcut_installed", { appId }).then(setInstalled).catch(() => setInstalled(false));
+    invoke<{ id: string; name: string; lang: string }[]>("get_system_voices")
+      .then(setSystemVoices)
+      .catch(() => {});
+  }, [appId]);
 
   // 登録作業から戻ってきたら自動で検出し直す (ポーリングなし)。
   // 空文の実行は無音で、受信記録だけが残る。
@@ -162,7 +164,11 @@ export function AppDetail({ api, state, personas, appId, platform, speaking, onB
           <section aria-label="声" className="mt-4">
             <h2 className="text-xs font-medium text-muted-foreground">声</h2>
             <ul className="mt-2 space-y-1.5">
-              {VOICES.map((v) => {
+              {[
+                ...VOICES.filter((v) => !v.premium),
+                ...systemVoices.map((v) => ({ id: v.id, name: v.name, tagline: v.lang, premium: false })),
+                ...VOICES.filter((v) => v.premium),
+              ].map((v) => {
                 const active = voice === v.id;
                 return (
                   <li key={v.id}>
@@ -240,16 +246,11 @@ export function AppDetail({ api, state, personas, appId, platform, speaking, onB
                       </Button>
                     </div>
                     {savedPath && (
-                      <p className="mt-2 break-all text-xs leading-relaxed text-muted-foreground">
-                        保存しました: {savedPath}
+                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                        保存しました: {savedPath.split("/").pop()}（ダウンロード内）
                       </p>
                     )}
                   </>
-                )}
-                {savedPath && (
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                    保存しました: {savedPath.split("/").pop()}（ダウンロード内）
-                  </p>
                 )}
               </div>
             </section>
