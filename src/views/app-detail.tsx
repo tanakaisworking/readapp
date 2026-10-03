@@ -20,6 +20,7 @@ interface Props {
 
 export function AppDetail({ api, state, appId, platform, speaking, onBack, onPreviewApp }: Props) {
   const app = knownApp(appId);
+  const appName = state.names[appId] ?? app.name;
   const on = isOn(state, appId);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [installed, setInstalled] = useState<boolean | null>(null);
@@ -74,6 +75,10 @@ export function AppDetail({ api, state, appId, platform, speaking, onBack, onPre
         setLinked(false);
         return;
       }
+      // 初めて繋がったアプリは読み上げ対象に加える (明示OFFは尊重する)
+      if (state.enabled[appId] === undefined) {
+        await api.setEnabled(appId, true);
+      }
       if (autoLink) {
         const t0 = Date.now();
         await invoke("run_shortcut", { appId }).catch(() => {});
@@ -103,7 +108,7 @@ export function AppDetail({ api, state, appId, platform, speaking, onBack, onPre
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
-        <h1 className="text-[15px] font-semibold">{app.name}</h1>
+        <h1 className="text-[15px] font-semibold">{appName}</h1>
       </header>
 
       <section aria-label="読み上げ" className="mt-3 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
@@ -114,7 +119,7 @@ export function AppDetail({ api, state, appId, platform, speaking, onBack, onPre
               {on ? "通知が来たら声でお知らせ" : "今は読み上げません"}
             </p>
           </div>
-          <Switch checked={on} onChange={(v) => void api.setEnabled(appId, v)} label={`${app.name}の読み上げ`} />
+          <Switch checked={on} onChange={(v) => void api.setEnabled(appId, v)} label={`${appName}の読み上げ`} />
         </div>
       </section>
 

@@ -213,6 +213,7 @@ fn scan_once(handle: &AppHandle) {
         if title.is_empty() && body.is_empty() {
             continue;
         }
+        settings.observe(&app_id);
         crate::record_received(&settings, &app_id, &title, &body);
         speak_notification(&settings, &app_id, &title, &body);
     }
@@ -305,37 +306,54 @@ pub fn start_if_trusted(handle: AppHandle) {
 }
 
 fn start_observer(handle: AppHandle) {
-    let Some(pid) = process_pid("NotificationCenter")
-        .or_else(|| process_pid("UserNotificationCenter"))
-    else {
+    // バナーの所属プロセスは版・状態で変わるため、両方を監視する。
+    let mut watched = 0;
+    for proc in ["NotificationCenter", "UserNotificationCenter"] {
+        let Some(pid) = process_pid(proc) else {
+            continue;
+        };
+        let h = handle.clone();
+        std::thread::spawn(move || {
+            observe_pid(h, proc, pid);
+        });
+        watched += 1;
+    }
+    if watched == 0 {
         eprintln!("[readapp] ax capture: NotificationCenter not found");
-        return;
-    };
-    std::thread::spawn(move || unsafe {
+    }
+}
+
+fn observe_pid(handle: AppHandle, proc: &str, pid: c_int) {
+    unsafe {
         let app_el = AXUIElementCreateApplication(pid);
         if app_el.is_null() {
+            eprintln!("[readapp] ax capture: AXUIElementCreateApplication failed for {proc}");
             return;
         }
         let mut observer: AXObserverRef = std::ptr::null_mut();
-        if AXObserverCreate(pid, observer_callback, &mut observer) != KAX_ERROR_SUCCESS {
+        let rc = AXObserverCreate(pid, observer_callback, &mut observer);
+        if rc != KAX_ERROR_SUCCESS {
+            eprintln!("[readapp] ax capture: AXObserverCreate failed for {proc}: {rc}");
             return;
         }
         // AppHandleはアプリ終了まで生きるためBox化して預ける
         let boxed = Box::new(handle);
         let refcon = Box::into_raw(boxed) as *mut c_void;
-        if AXObserverAddNotification(
+        let rc = AXObserverAddNotification(
             observer,
             app_el,
             ax_string("AXWindowCreated").as_concrete_TypeRef(),
             refcon,
-        ) != KAX_ERROR_SUCCESS
-        {
+        );
+        if rc != KAX_ERROR_SUCCESS {
+            eprintln!("[readapp] ax capture: AXObserverAddNotification failed for {proc}: {rc}");
             return;
         }
+        eprintln!("[readapp] ax capture: watching {proc} (pid={pid})");
         let source = AXObserverGetRunLoopSource(observer);
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, run_loop_mode());
         CFRunLoopRun();
-    });
+    }
 }
 
 extern "C" fn observer_callback(
@@ -370,6 +388,7 @@ extern "C" fn observer_callback(
     if title.is_empty() && body.is_empty() {
         return;
     }
+    settings.observe(&app_id);
     crate::record_received(&settings, &app_id, &title, &body);
     speak_notification(&settings, &app_id, &title, &body);
 }

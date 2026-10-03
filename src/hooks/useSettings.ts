@@ -13,11 +13,23 @@ export function useSettings() {
     invoke<Persona[]>("get_personas").then(setPersonas).catch(() => {});
   }, []);
 
-  const setEnabled = useCallback(async (id: string, v: boolean) => {
-    await invoke("set_app_enabled", { appId: id, enabled: v });
-    setState((s) => (s ? { ...s, enabled: { ...s.enabled, [id]: v } } : s));
+  const setEnabled = useCallback(async (id: string, v: boolean, displayName?: string) => {
+    await invoke("set_app_enabled", { appId: id, enabled: v, displayName: displayName ?? null });
+    setState((s) =>
+      s
+        ? {
+            ...s,
+            enabled: { ...s.enabled, [id]: v },
+            names: displayName ? { ...s.names, [id]: displayName } : s.names,
+          }
+        : s,
+    );
   }, []);
 
+  const setSpeakAll = useCallback(async (v: boolean) => {
+    await invoke("set_speak_all", { enabled: v });
+    setState((s) => (s ? { ...s, speak_all: v } : s));
+  }, []);
   const setMode = useCallback(async (v: string) => {
     await invoke("set_mode", { mode: v });
     setState((s) => (s ? { ...s, mode: v } : s));
@@ -50,6 +62,7 @@ export function useSettings() {
     platform,
     personas,
     setEnabled,
+    setSpeakAll,
     setMode,
     setPersona,
     setVoice,

@@ -15,6 +15,7 @@ target
 
 # macOS変換ヘルパーの生成物 (`npm run build:helper` で作る)
 src-tauri/binaries/fm-helper-*
+src-tauri/binaries/notify-test-*
 # 署名前の中間ファイル
 src-tauri/resources/shortcuts/*.unsigned.shortcut
 

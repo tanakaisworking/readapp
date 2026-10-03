@@ -130,6 +130,7 @@ pub fn start_listener(handle: AppHandle) {
                 return Ok(());
             }
             let settings = moved.state::<AppSettings>();
+            settings.observe(&parsed.app_id);
             speak_notification(&settings, &parsed.app_id, &parsed.title, &parsed.body);
             Ok(())
         },
@@ -144,6 +145,7 @@ pub fn start_listener(handle: AppHandle) {
                     continue;
                 }
                 let settings = handle.state::<AppSettings>();
+                settings.observe(&n.app_id);
                 speak_notification(&settings, &n.app_id, &n.title, &n.body);
             }
         }

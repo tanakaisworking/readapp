@@ -4,11 +4,12 @@ pub mod speech;
 pub mod subscription;
 pub mod transform;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 
@@ -19,6 +20,10 @@ use crate::transform::Mode;
 /// persona/voice/mode はキャラ側の持ち物で全体共有、アプリ側はON/OFFだけ。
 pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
+    /// すべて読み上げモード。ONなら個別設定に関わらず読む。
+    speak_all: Mutex<bool>,
+    /// 表示名の上書き (ファイル選択で追加したアプリ用)。
+    names: Mutex<HashMap<String, String>>,
     mode: Mutex<String>,
     persona: Mutex<String>,
     voice: Mutex<String>,
@@ -28,6 +33,10 @@ pub struct AppSettings {
     helper_path: Mutex<Option<PathBuf>>,
     /// 最後にパイプラインへ入った通知 (疎通確認用。実行時のみ)。
     last_received: Mutex<Option<ReceivedNotification>>,
+    /// 見かけた通知元 (追加候補用。実行時のみ)。
+    observed: Mutex<HashSet<String>>,
+    /// イベント送信用 (setup時に設定)。
+    app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +58,10 @@ fn now_secs() -> u64 {
 struct SavedSettings {
     #[serde(default)]
     enabled: HashMap<String, bool>,
+    #[serde(default)]
+    speak_all: bool,
+    #[serde(default)]
+    names: HashMap<String, String>,
     #[serde(default = "persona_mode_default")]
     mode: String,
     #[serde(default = "default_persona_id")]
@@ -75,6 +88,8 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             enabled: Mutex::new(HashMap::new()),
+            speak_all: Mutex::new(false),
+            names: Mutex::new(HashMap::new()),
             mode: Mutex::new(persona_mode_default()),
             persona: Mutex::new(default_persona_id()),
             voice: Mutex::new(default_voice_id()),
@@ -82,6 +97,8 @@ impl Default for AppSettings {
             data_file: Mutex::new(None),
             helper_path: Mutex::new(None),
             last_received: Mutex::new(None),
+            observed: Mutex::new(HashSet::new()),
+            app_handle: Mutex::new(None),
         }
     }
 }
@@ -108,6 +125,13 @@ impl AppSettings {
             .unwrap_or_else(|_| default_voice_id())
     }
 
+    pub fn display_name(&self, app_id: &str) -> Option<String> {
+        self.names
+            .lock()
+            .map(|m| m.get(app_id).cloned())
+            .unwrap_or(None)
+    }
+
     pub fn helper_path(&self) -> Option<PathBuf> {
         self.helper_path.lock().map(|p| p.clone()).unwrap_or(None)
     }
@@ -118,9 +142,46 @@ impl AppSettings {
         }
     }
 
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        if let Ok(mut h) = self.app_handle.lock() {
+            *h = Some(handle);
+        }
+    }
+
+    /// 通知元を見かけたら記録する (追加候補用)。新規ならイベントで知らせる。
+    pub(crate) fn observe(&self, app_id: &str) {
+        let id = app_id.trim();
+        if id.is_empty() {
+            return;
+        }
+        let is_new = self
+            .observed
+            .lock()
+            .map(|mut s| s.insert(id.to_string()))
+            .unwrap_or(false);
+        if is_new {
+            if let Some(h) = self.app_handle.lock().map(|h| h.clone()).unwrap_or(None) {
+                h.emit("observed-changed", ()).ok();
+            }
+        }
+    }
+
+    pub(crate) fn observed_apps(&self) -> Vec<String> {
+        self.observed
+            .lock()
+            .map(|s| {
+                let mut v: Vec<String> = s.iter().cloned().collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
+    }
+
     fn snapshot(&self) -> SavedSettings {
         SavedSettings {
             enabled: self.enabled.lock().map(|m| m.clone()).unwrap_or_default(),
+            speak_all: self.speak_all.lock().map(|b| *b).unwrap_or(false),
+            names: self.names.lock().map(|m| m.clone()).unwrap_or_default(),
             mode: self.mode.lock().map(|m| m.clone()).unwrap_or_else(|_| persona_mode_default()),
             persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
             voice: self.voice.lock().map(|v| v.clone()).unwrap_or_else(|_| default_voice_id()),
@@ -149,6 +210,12 @@ impl AppSettings {
                     // 新形式そのまま
                     if let Ok(mut m) = self.enabled.lock() {
                         *m = saved.enabled;
+                    }
+                    if let Ok(mut b) = self.speak_all.lock() {
+                        *b = saved.speak_all;
+                    }
+                    if let Ok(mut m) = self.names.lock() {
+                        *m = saved.names;
                     }
                     if let Ok(mut m) = self.mode.lock() {
                         *m = saved.mode;
@@ -193,8 +260,11 @@ impl AppSettings {
 }
 
 /// notification → shouldSpeak() → transform() → speak() の shouldSpeak 部分。
-/// 未登録アプリは読み上げる (default true)。
+/// すべて読み上げモードか、個別ONのアプリを読む。未登録アプリは読む (default true)。
 fn should_speak(settings: &AppSettings, app_id: &str) -> bool {
+    if settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
+        return true;
+    }
     settings
         .enabled
         .lock()
@@ -208,9 +278,22 @@ fn get_settings(state: State<'_, AppSettings>) -> HashMap<String, bool> {
 }
 
 #[tauri::command]
-fn set_app_enabled(state: State<'_, AppSettings>, app_id: String, enabled: bool) {
+fn set_app_enabled(
+    state: State<'_, AppSettings>,
+    app_id: String,
+    enabled: bool,
+    display_name: Option<String>,
+) {
     if let Ok(mut m) = state.enabled.lock() {
-        m.insert(app_id, enabled);
+        m.insert(app_id.clone(), enabled);
+    }
+    if let Some(name) = display_name {
+        let name = name.trim().to_string();
+        if !name.is_empty() {
+            if let Ok(mut m) = state.names.lock() {
+                m.insert(app_id, name);
+            }
+        }
     }
     state.save();
 }
@@ -220,6 +303,14 @@ fn set_mode(state: State<'_, AppSettings>, mode: String) {
     let mode = Mode::from_str(&mode).as_str().to_string();
     if let Ok(mut m) = state.mode.lock() {
         *m = mode;
+    }
+    state.save();
+}
+
+#[tauri::command]
+fn set_speak_all(state: State<'_, AppSettings>, enabled: bool) {
+    if let Ok(mut b) = state.speak_all.lock() {
+        *b = enabled;
     }
     state.save();
 }
@@ -260,6 +351,8 @@ fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
 #[derive(Serialize)]
 struct FullState {
     enabled: HashMap<String, bool>,
+    speak_all: bool,
+    names: HashMap<String, String>,
     mode: String,
     persona: String,
     voice: String,
@@ -271,11 +364,18 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
     let s = state.snapshot();
     FullState {
         enabled: s.enabled,
+        speak_all: s.speak_all,
+        names: s.names,
         mode: s.mode,
         persona: s.persona,
         voice: s.voice,
         onboarded: s.onboarded,
     }
+}
+
+#[tauri::command]
+fn display_name(state: State<'_, AppSettings>, app_id: String) -> Option<String> {
+    state.display_name(&app_id)
 }
 
 #[tauri::command]
@@ -344,6 +444,12 @@ fn get_system_voices() -> Vec<speech::system::SystemVoice> {
 #[tauri::command]
 fn get_last_received(state: State<'_, AppSettings>) -> Option<ReceivedNotification> {
     state.last_received.lock().map(|l| l.clone()).unwrap_or(None)
+}
+
+/// 見かけた通知元の一覧 (追加候補用)。
+#[tauri::command]
+fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<String> {
+    state.observed_apps()
 }
 
 fn shortcut_name(app_id: &str) -> Option<String> {
@@ -473,6 +579,7 @@ pub(crate) fn speak_notification(
 /// URLスキーム受信 (M3): readapp://notify?... をパイプラインに流す。
 fn handle_notify_url(settings: &AppSettings, url: &url::Url) {
     if let Some(n) = notifications::macos::parse_notify_url(url) {
+        settings.observe(&n.app_id);
         record_received(settings, &n.app_id, &n.title, &n.body);
         speak_notification(settings, &n.app_id, &n.title, &n.body);
     }
@@ -519,6 +626,7 @@ pub fn run() {
         // Windowsで別プロセスが設定を迂回するのを防ぐ。
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .manage(AppSettings::default())
         .invoke_handler(tauri::generate_handler![
@@ -533,9 +641,12 @@ pub fn run() {
             shortcut_installed,
             run_shortcut,
             get_last_received,
+            get_observed_apps,
             get_state,
+            display_name,
             get_settings,
             set_app_enabled,
+            set_speak_all,
             set_mode,
             get_personas,
             set_persona,
@@ -547,6 +658,10 @@ pub fn run() {
         .setup(|app| {
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
+            // イベント送信用ハンドルを保持 (observed-changed等)
+            handle
+                .state::<AppSettings>()
+                .set_app_handle(handle.clone());
             // 保存済み設定の読み込み (M5)。無ければ既定値のまま。
             {
                 let settings = handle.state::<AppSettings>();
@@ -690,6 +805,20 @@ mod tests {
         assert_eq!(back.enabled.get("slack"), Some(&true));
         assert_eq!(back.persona, "mio");
         assert!(!back.onboarded);
+        assert!(!back.speak_all);
+    }
+
+    #[test]
+    fn speak_all_overrides_explicit_off() {
+        let settings = AppSettings::default();
+        settings
+            .enabled
+            .lock()
+            .unwrap()
+            .insert("slack".to_string(), false);
+        assert!(!should_speak(&settings, "slack"));
+        *settings.speak_all.lock().unwrap() = true;
+        assert!(should_speak(&settings, "slack"));
     }
 
     #[test]

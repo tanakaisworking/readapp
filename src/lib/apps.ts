@@ -31,6 +31,8 @@ export interface Persona {
 
 export interface FullState {
   enabled: Record<string, boolean>;
+  speak_all: boolean;
+  names: Record<string, string>;
   mode: string;
   persona: string;
   voice: string;
