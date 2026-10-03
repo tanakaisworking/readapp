@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,20 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
   const [step, setStep] = useState(0);
   const [persona, setPersona] = useState("mio");
   const [granted, setGranted] = useState(false);
+  const [axOn, setAxOn] = useState<boolean | null>(null);
   const last = 3;
+
+  useEffect(() => {
+    if (platform === "macos") {
+      invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
+    }
+  }, [platform]);
+
+  const requestAx = async () => {
+    const ok = await invoke<boolean>("ax_request_access").catch(() => false);
+    setAxOn(ok);
+    if (ok) setGranted(true);
+  };
 
   const pick = (id: string) => {
     setPersona(id);
@@ -89,7 +102,31 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
                     つぎへ
                   </Button>
                 </>
+              ) : axOn ? (
+                <>
+                  <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+                    直接監視が効いているので、このまま通知が届きます。ショートカットの登録は要りません。
+                  </p>
+                  <div className="flex-1" />
+                  <Button className="w-full" onClick={() => setStep(2)}>
+                    つぎへ
+                  </Button>
+                </>
               ) : (
+                <>
+                  <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+                    ショートカットなしで受け取るには、直接監視の許可が必要です。
+                  </p>
+                  <div className="flex-1" />
+                  <Button className="w-full" onClick={() => void requestAx()}>
+                    通知の直接監視を許可
+                  </Button>
+                  <Button className="mt-2 w-full" variant="ghost" onClick={() => setStep(2)}>
+                    ショートカットで進める
+                  </Button>
+                </>
+              )}
+              {platform === "macos" && !axOn && (
                 <>
                   <ol className="mt-4 space-y-3 text-[13px] leading-relaxed">
                     <li className="flex gap-2.5">

@@ -15,13 +15,13 @@ use tauri::State;
 use crate::transform::Mode;
 
 /// アプリ別の読み上げ設定。JSONで永続化する (M5)。
-/// persona/voice はアプリ別。未設定は default_persona / "system" を使う。
+/// 考え方は「キャラを決める→対象アプリを決める」。
+/// persona/voice/mode はキャラ側の持ち物で全体共有、アプリ側はON/OFFだけ。
 pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
-    mode: Mutex<HashMap<String, String>>,
-    persona: Mutex<HashMap<String, String>>,
-    voice: Mutex<HashMap<String, String>>,
-    default_persona: Mutex<String>,
+    mode: Mutex<String>,
+    persona: Mutex<String>,
+    voice: Mutex<String>,
     onboarded: Mutex<bool>,
     data_file: Mutex<Option<PathBuf>>,
     /// macOS変換ヘルパーのパス。無ければ素文フォールバック (実行時のみ)。
@@ -49,14 +49,12 @@ fn now_secs() -> u64 {
 struct SavedSettings {
     #[serde(default)]
     enabled: HashMap<String, bool>,
-    #[serde(default)]
-    mode: HashMap<String, String>,
-    #[serde(default)]
-    persona: HashMap<String, String>,
-    #[serde(default)]
-    voice: HashMap<String, String>,
+    #[serde(default = "persona_mode_default")]
+    mode: String,
     #[serde(default = "default_persona_id")]
-    default_persona: String,
+    persona: String,
+    #[serde(default = "default_voice_id")]
+    voice: String,
     #[serde(default)]
     onboarded: bool,
 }
@@ -65,14 +63,21 @@ fn default_persona_id() -> String {
     "mio".to_string()
 }
 
+fn default_voice_id() -> String {
+    "system".to_string()
+}
+
+fn persona_mode_default() -> String {
+    "persona".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             enabled: Mutex::new(HashMap::new()),
-            mode: Mutex::new(HashMap::new()),
-            persona: Mutex::new(HashMap::new()),
-            voice: Mutex::new(HashMap::new()),
-            default_persona: Mutex::new(default_persona_id()),
+            mode: Mutex::new(persona_mode_default()),
+            persona: Mutex::new(default_persona_id()),
+            voice: Mutex::new(default_voice_id()),
             onboarded: Mutex::new(false),
             data_file: Mutex::new(None),
             helper_path: Mutex::new(None),
@@ -82,30 +87,25 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    pub fn mode_of(&self, app_id: &str) -> Mode {
+    pub fn mode(&self) -> Mode {
         self.mode
             .lock()
-            .map(|m| m.get(app_id).map(|s| Mode::from_str(s)).unwrap_or(Mode::Persona))
+            .map(|m| Mode::from_str(m.as_str()))
             .unwrap_or(Mode::Persona)
     }
 
-    pub fn persona_of(&self, app_id: &str) -> String {
-        let fallback = self
-            .default_persona
-            .lock()
-            .map(|p| p.clone())
-            .unwrap_or_else(|_| default_persona_id());
+    pub fn persona(&self) -> String {
         self.persona
             .lock()
-            .map(|m| m.get(app_id).cloned().unwrap_or_else(|| fallback.clone()))
-            .unwrap_or(fallback)
+            .map(|p| p.clone())
+            .unwrap_or_else(|_| default_persona_id())
     }
 
-    pub fn voice_of(&self, app_id: &str) -> String {
+    pub fn voice(&self) -> String {
         self.voice
             .lock()
-            .map(|m| m.get(app_id).cloned().unwrap_or_else(|| "system".to_string()))
-            .unwrap_or_else(|_| "system".to_string())
+            .map(|v| v.clone())
+            .unwrap_or_else(|_| default_voice_id())
     }
 
     pub fn helper_path(&self) -> Option<PathBuf> {
@@ -121,14 +121,9 @@ impl AppSettings {
     fn snapshot(&self) -> SavedSettings {
         SavedSettings {
             enabled: self.enabled.lock().map(|m| m.clone()).unwrap_or_default(),
-            mode: self.mode.lock().map(|m| m.clone()).unwrap_or_default(),
-            persona: self.persona.lock().map(|m| m.clone()).unwrap_or_default(),
-            voice: self.voice.lock().map(|m| m.clone()).unwrap_or_default(),
-            default_persona: self
-                .default_persona
-                .lock()
-                .map(|p| p.clone())
-                .unwrap_or_else(|_| default_persona_id()),
+            mode: self.mode.lock().map(|m| m.clone()).unwrap_or_else(|_| persona_mode_default()),
+            persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
+            voice: self.voice.lock().map(|v| v.clone()).unwrap_or_else(|_| default_voice_id()),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
         }
     }
@@ -147,28 +142,47 @@ impl AppSettings {
 
     fn load(&self, path: &PathBuf) {
         if let Ok(json) = std::fs::read_to_string(path) {
-            if let Ok(saved) = serde_json::from_str::<SavedSettings>(&json) {
-                if let Ok(mut m) = self.enabled.lock() {
-                    *m = saved.enabled;
-                }
-                if let Ok(mut m) = self.mode.lock() {
-                    *m = saved.mode;
-                }
-                if let Ok(mut m) = self.persona.lock() {
-                    *m = saved.persona;
-                }
-                if let Ok(mut m) = self.voice.lock() {
-                    *m = saved.voice;
-                }
-                if let Ok(mut p) = self.default_persona.lock() {
-                    *p = if saved.default_persona.is_empty() {
-                        default_persona_id()
-                    } else {
-                        saved.default_persona
-                    };
-                }
-                if let Ok(mut b) = self.onboarded.lock() {
-                    *b = saved.onboarded;
+            // 旧形式 (アプリ別map) からの移行を吸収するためValue経由で読む。
+            // personaは旧default_personaを引き継ぎ、mode/voiceは既定に戻す。
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Ok(saved) = serde_json::from_value::<SavedSettings>(v.clone()) {
+                    // 新形式そのまま
+                    if let Ok(mut m) = self.enabled.lock() {
+                        *m = saved.enabled;
+                    }
+                    if let Ok(mut m) = self.mode.lock() {
+                        *m = saved.mode;
+                    }
+                    if let Ok(mut p) = self.persona.lock() {
+                        *p = saved.persona;
+                    }
+                    if let Ok(mut vv) = self.voice.lock() {
+                        *vv = saved.voice;
+                    }
+                    if let Ok(mut b) = self.onboarded.lock() {
+                        *b = saved.onboarded;
+                    }
+                } else {
+                    // 旧形式: enabled・onboarded・default_personaだけ拾う
+                    if let Some(enabled) = v.get("enabled").and_then(|e| {
+                        serde_json::from_value::<HashMap<String, bool>>(e.clone()).ok()
+                    }) {
+                        if let Ok(mut m) = self.enabled.lock() {
+                            *m = enabled;
+                        }
+                    }
+                    if let Some(p) = v.get("default_persona").and_then(|p| p.as_str()) {
+                        if !p.is_empty() {
+                            if let Ok(mut cur) = self.persona.lock() {
+                                *cur = p.to_string();
+                            }
+                        }
+                    }
+                    if let Some(b) = v.get("onboarded").and_then(|b| b.as_bool()) {
+                        if let Ok(mut cur) = self.onboarded.lock() {
+                            *cur = b;
+                        }
+                    }
                 }
             }
         }
@@ -202,17 +216,12 @@ fn set_app_enabled(state: State<'_, AppSettings>, app_id: String, enabled: bool)
 }
 
 #[tauri::command]
-fn set_app_mode(state: State<'_, AppSettings>, app_id: String, mode: String) {
+fn set_mode(state: State<'_, AppSettings>, mode: String) {
     let mode = Mode::from_str(&mode).as_str().to_string();
     if let Ok(mut m) = state.mode.lock() {
-        m.insert(app_id, mode);
+        *m = mode;
     }
     state.save();
-}
-
-#[tauri::command]
-fn get_app_mode(state: State<'_, AppSettings>, app_id: String) -> String {
-    state.mode_of(&app_id).as_str().to_string()
 }
 
 #[tauri::command]
@@ -221,33 +230,9 @@ fn get_personas() -> Vec<transform::Persona> {
 }
 
 #[tauri::command]
-fn get_app_persona(state: State<'_, AppSettings>, app_id: String) -> String {
-    state.persona_of(&app_id)
-}
-
-#[tauri::command]
-fn set_app_persona(state: State<'_, AppSettings>, app_id: String, persona_id: String) {
+fn set_persona(state: State<'_, AppSettings>, persona_id: String) {
     if transform::personas().iter().any(|p| p.id == persona_id) {
-        if let Ok(mut m) = state.persona.lock() {
-            m.insert(app_id, persona_id);
-        }
-        state.save();
-    }
-}
-
-#[tauri::command]
-fn get_default_persona(state: State<'_, AppSettings>) -> String {
-    state
-        .default_persona
-        .lock()
-        .map(|p| p.clone())
-        .unwrap_or_else(|_| default_persona_id())
-}
-
-#[tauri::command]
-fn set_default_persona(state: State<'_, AppSettings>, persona_id: String) {
-    if transform::personas().iter().any(|p| p.id == persona_id) {
-        if let Ok(mut p) = state.default_persona.lock() {
+        if let Ok(mut p) = state.persona.lock() {
             *p = persona_id;
         }
         state.save();
@@ -255,12 +240,7 @@ fn set_default_persona(state: State<'_, AppSettings>, persona_id: String) {
 }
 
 #[tauri::command]
-fn get_app_voice(state: State<'_, AppSettings>, app_id: String) -> String {
-    state.voice_of(&app_id)
-}
-
-#[tauri::command]
-fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: String) {
+fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
     // 存在しない声の指定は捨てる (OS既定・プレミアム枠・搭載声のみ受ける)
     const PREMIUM: [&str; 2] = ["clear", "warm"];
     let known = voice_id == "system"
@@ -271,8 +251,8 @@ fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: String
     if !known {
         return;
     }
-    if let Ok(mut m) = state.voice.lock() {
-        m.insert(app_id, voice_id);
+    if let Ok(mut v) = state.voice.lock() {
+        *v = voice_id;
     }
     state.save();
 }
@@ -280,10 +260,9 @@ fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: String
 #[derive(Serialize)]
 struct FullState {
     enabled: HashMap<String, bool>,
-    mode: HashMap<String, String>,
-    persona: HashMap<String, String>,
-    voice: HashMap<String, String>,
-    default_persona: String,
+    mode: String,
+    persona: String,
+    voice: String,
     onboarded: bool,
 }
 
@@ -295,7 +274,6 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
         mode: s.mode,
         persona: s.persona,
         voice: s.voice,
-        default_persona: s.default_persona,
         onboarded: s.onboarded,
     }
 }
@@ -332,6 +310,19 @@ fn ax_request_access() -> bool {
     #[cfg(target_os = "macos")]
     {
         notifications::ax::request_prompt()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// 直接監視が動作中か。
+#[tauri::command]
+fn ax_watching() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        notifications::ax::watching()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -474,8 +465,8 @@ pub(crate) fn speak_notification(
     } else {
         format!("{}。{}", title, body)
     };
-    let text = transform::transform_text(settings, app_id, &raw);
-    speech::system::speak(&text, &settings.voice_of(app_id));
+    let text = transform::transform_text(settings, &raw);
+    speech::system::speak(&text, &settings.voice());
     Some(text)
 }
 
@@ -535,6 +526,7 @@ pub fn run() {
             get_platform,
             ax_trusted,
             ax_request_access,
+            ax_watching,
             ax_open_settings,
             get_system_voices,
             download_shortcut,
@@ -544,15 +536,10 @@ pub fn run() {
             get_state,
             get_settings,
             set_app_enabled,
-            set_app_mode,
-            get_app_mode,
+            set_mode,
             get_personas,
-            get_app_persona,
-            set_app_persona,
-            get_default_persona,
-            set_default_persona,
-            get_app_voice,
-            set_app_voice,
+            set_persona,
+            set_voice,
             set_onboarded,
             windows_ensure_access,
             test_speak
@@ -656,13 +643,9 @@ mod tests {
     #[test]
     fn raw_mode_skips_persona_transform() {
         let settings = AppSettings::default();
-        settings
-            .mode
-            .lock()
-            .unwrap()
-            .insert("dev.test".to_string(), "raw".to_string());
+        *settings.mode.lock().unwrap() = "raw".to_string();
         assert_eq!(
-            transform::transform_text(&settings, "dev.test", "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。"),
             "作業が完了しました。"
         );
     }
@@ -672,7 +655,7 @@ mod tests {
         let settings = AppSettings::default();
         assert!(settings.helper_path().is_none());
         assert_eq!(
-            transform::transform_text(&settings, "dev.test", "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。"),
             "作業が完了しました。"
         );
     }
@@ -682,7 +665,7 @@ mod tests {
         let settings = AppSettings::default();
         settings.set_helper_path(Some(std::path::PathBuf::from("/nonexistent/fm-helper")));
         assert_eq!(
-            transform::transform_text(&settings, "dev.test", "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。"),
             "作業が完了しました。"
         );
     }
@@ -690,20 +673,8 @@ mod tests {
     #[test]
     fn default_persona_is_mio() {
         let settings = AppSettings::default();
-        assert_eq!(settings.persona_of("dev.test"), "mio");
+        assert_eq!(settings.persona(), "mio");
         assert!(transform::personas().iter().any(|p| p.id == "mio"));
-    }
-
-    #[test]
-    fn per_app_persona_overrides_default() {
-        let settings = AppSettings::default();
-        settings
-            .persona
-            .lock()
-            .unwrap()
-            .insert("dev.test".to_string(), "aoi".to_string());
-        assert_eq!(settings.persona_of("dev.test"), "aoi");
-        assert_eq!(settings.persona_of("other"), "mio");
     }
 
     #[test]
@@ -717,7 +688,27 @@ mod tests {
         let json = serde_json::to_string(&settings.snapshot()).unwrap();
         let back: SavedSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.enabled.get("slack"), Some(&true));
-        assert_eq!(back.default_persona, "mio");
+        assert_eq!(back.persona, "mio");
         assert!(!back.onboarded);
+    }
+
+    #[test]
+    fn old_settings_migrate_enabled_and_persona() {
+        let settings = AppSettings::default();
+        let old = serde_json::json!({
+            "enabled": {"slack": true},
+            "mode": {"slack": "raw"},
+            "persona": {"slack": "aoi"},
+            "voice": {"slack": "system:Kyoko"},
+            "default_persona": "aoi",
+            "onboarded": true
+        });
+        let dir = std::env::temp_dir().join("readapp-migrate-test.json");
+        std::fs::write(&dir, serde_json::to_string(&old).unwrap()).unwrap();
+        settings.load(&dir);
+        std::fs::remove_file(&dir).ok();
+        assert!(should_speak(&settings, "slack"));
+        assert_eq!(settings.persona(), "aoi");
+        assert!(settings.onboarded.lock().map(|b| *b).unwrap_or(false));
     }
 }

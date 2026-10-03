@@ -4,7 +4,6 @@ import { useSettings } from "@/hooks/useSettings";
 import { Home } from "@/views/home";
 import { AppDetail } from "@/views/app-detail";
 import { Onboarding } from "@/views/onboarding";
-import { PremiumSheet } from "@/components/premium-sheet";
 import "./index.css";
 
 type View = { name: "home" } | { name: "app"; appId: string };
@@ -14,7 +13,6 @@ function App() {
   const { state, personas, platform } = api;
   const [view, setView] = useState<View>({ name: "home" });
   const [speaking, setSpeaking] = useState(false);
-  const [premiumVoice, setPremiumVoice] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // システムの外観に追従 (DESIGN.md ダークモード)
@@ -68,7 +66,7 @@ function App() {
           platform={platform}
           speaking={speaking}
           onPreview={previewDefault}
-          onPickDefaultPersona={(id) => void api.setDefaultPersona(id)}
+          onPickDefaultPersona={(id) => void api.setPersona(id)}
           onDone={() => void api.setOnboarded(true)}
         />
       </main>
@@ -91,7 +89,6 @@ function App() {
             <AppDetail
               api={api}
               state={state}
-              personas={personas}
               appId={view.appId}
               platform={platform}
               speaking={speaking}
@@ -99,7 +96,6 @@ function App() {
               onPreviewApp={(id) =>
                 void preview(id, "テスト", "通知読み上げの実験です。作業が完了しました。")
               }
-              onPremium={setPremiumVoice}
             />
           ) : (
             <Home
@@ -110,12 +106,11 @@ function App() {
               speaking={speaking}
               onPreview={previewDefault}
               onOpenApp={(id) => setView({ name: "app", appId: id })}
-              onPickPersona={(id) => void api.setDefaultPersona(id)}
+              onPickPersona={(id) => void api.setPersona(id)}
             />
           )}
         </motion.div>
       </AnimatePresence>
-      <PremiumSheet voiceName={premiumVoice} onClose={() => setPremiumVoice(null)} />
     </main>
     </MotionConfig>
   );

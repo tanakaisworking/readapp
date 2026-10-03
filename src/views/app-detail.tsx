@@ -1,45 +1,39 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronLeft, Download, Play, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { PersonaPicker } from "@/components/persona-picker";
-import { VOICES, knownApp, type Persona } from "@/lib/apps";
-import { isOn, modeOf, personaOf, voiceOf, type SettingsApi } from "@/hooks/useSettings";
+import { knownApp } from "@/lib/apps";
+import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
-import { cn } from "@/lib/utils";
 
 interface Props {
   api: SettingsApi;
   state: FullState;
-  personas: Persona[];
   appId: string;
   platform: string;
   speaking: boolean;
   onBack: () => void;
   onPreviewApp: (appId: string) => void;
-  onPremium: (voiceName: string) => void;
 }
 
-export function AppDetail({ api, state, personas, appId, platform, speaking, onBack, onPreviewApp, onPremium }: Props) {
+export function AppDetail({ api, state, appId, platform, speaking, onBack, onPreviewApp }: Props) {
   const app = knownApp(appId);
   const on = isOn(state, appId);
-  const mode = modeOf(state, appId);
-  const voice = voiceOf(state, appId);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [linked, setLinked] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [systemVoices, setSystemVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
+  const [axOn, setAxOn] = useState(false);
   const busy = useRef(false);
 
   useEffect(() => {
     invoke<boolean>("shortcut_installed", { appId }).then(setInstalled).catch(() => setInstalled(false));
-    invoke<{ id: string; name: string; lang: string }[]>("get_system_voices")
-      .then(setSystemVoices)
-      .catch(() => {});
-  }, [appId]);
+    if (platform === "macos") {
+      invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
+    }
+  }, [appId, platform]);
 
   // 登録作業から戻ってきたら自動で検出し直す (ポーリングなし)。
   // 空文の実行は無音で、受信記録だけが残る。
@@ -48,7 +42,10 @@ export function AppDetail({ api, state, personas, appId, platform, speaking, onB
     let unlisten: (() => void) | null = null;
     getCurrentWindow()
       .onFocusChanged((e) => {
-        if (e.payload) void refreshStatus(true);
+        if (e.payload) {
+          invoke<boolean>("ax_trusted").then(setAxOn).catch(() => {});
+          void refreshStatus(true);
+        }
       })
       .then((f) => {
         unlisten = f;
@@ -123,95 +120,12 @@ export function AppDetail({ api, state, personas, appId, platform, speaking, onB
 
       {on && (
         <>
-          <section aria-label="話し方" className="mt-4">
-            <h2 className="text-xs font-medium text-muted-foreground">話し方</h2>
-            <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-surface-muted p-1">
-              {[
-                { id: "raw", label: "素文で読む" },
-                { id: "persona", label: "キャラっぽく話す" },
-              ].map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  aria-pressed={mode === m.id}
-                  onClick={() => void api.setMode(appId, m.id)}
-                  className={cn(
-                    "h-9 rounded-md text-sm font-medium outline-none transition-all duration-150 focus-visible:ring-2 focus-visible:ring-primary/50",
-                    mode === m.id
-                      ? "bg-card text-foreground shadow-[0_1px_2px_rgba(41,39,45,0.1)]"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {mode === "persona" && (
-            <section aria-label="キャラ" className="mt-4">
-              <h2 className="text-xs font-medium text-muted-foreground">キャラ</h2>
-              <div className="mt-2">
-                <PersonaPicker
-                  personas={personas}
-                  selected={personaOf(state, appId)}
-                  onSelect={(id) => void api.setPersona(appId, id)}
-                />
-              </div>
-            </section>
-          )}
-
-          <section aria-label="声" className="mt-4">
-            <h2 className="text-xs font-medium text-muted-foreground">声</h2>
-            <ul className="mt-2 space-y-1.5">
-              {[
-                ...VOICES.filter((v) => !v.premium),
-                ...systemVoices.map((v) => ({ id: v.id, name: v.name, tagline: v.lang, premium: false })),
-                ...VOICES.filter((v) => v.premium),
-              ].map((v) => {
-                const active = voice === v.id;
-                return (
-                  <li key={v.id}>
-                    <button
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => {
-                        if (v.premium) {
-                          onPremium(v.name);
-                        } else {
-                          void (async () => {
-                            await api.setVoice(appId, v.id);
-                            onPreviewApp(appId);
-                          })();
-                        }
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-lg bg-card px-3.5 py-3 text-left outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
-                        active && "ring-2 ring-primary/60",
-                      )}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 text-sm font-medium">
-                          {v.name}
-                          {v.premium && (
-                            <Sparkles className="h-3.5 w-3.5 text-primary" aria-label="プレミアム" />
-                          )}
-                        </span>
-                        <span className="block text-xs text-muted-foreground">{v.tagline}</span>
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-
-          <Button className="mt-5 w-full" onClick={() => onPreviewApp(appId)} disabled={speaking}>
+          <Button className="mt-4 w-full" onClick={() => onPreviewApp(appId)} disabled={speaking}>
             <Play className="h-4 w-4" />
             試しに喋る
           </Button>
 
-          {platform === "macos" && (
+          {platform === "macos" && !axOn && (
             <section aria-label="ショートカット" className="mt-4">
               <h2 className="text-xs font-medium text-muted-foreground">ショートカット</h2>
               <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">

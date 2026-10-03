@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::{c_int, c_long};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{atomic::{AtomicBool, Ordering}, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use core_foundation::base::TCFType;
@@ -127,12 +127,81 @@ fn mark_fresh_content(texts: &[String]) -> bool {
         .unwrap_or(true)
 }
 
-/// 既存窓の走査 (起動直後・定期)。パネル開閉に関わらず見える分だけ拾う。
+/// ウィンドウの矩形 (AXPosition/AXSize)。取れなければNone。
+/// バナー判定に使う: 画面内の小さな窓だけを通す。
+unsafe fn ax_bounds(element: AXUIElementRef) -> Option<(f64, f64, f64, f64)> {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    struct CGSize {
+        w: f64,
+        h: f64,
+    }
+    extern "C" {
+        fn AXValueGetValue(value: *const c_void, the_type: *const c_void, out: *mut c_void) -> bool;
+    }
+    let pos_attr = ax_string("AXPosition");
+    let size_attr = ax_string("AXSize");
+    let point_type = CFString::new("CGPoint");
+    let size_type = CFString::new("CGSize");
+    let mut pos_val: *const c_void = std::ptr::null();
+    let mut size_val: *const c_void = std::ptr::null();
+    if AXUIElementCopyAttributeValue(
+        element,
+        pos_attr.as_concrete_TypeRef(),
+        &mut pos_val,
+    ) != KAX_ERROR_SUCCESS
+        || pos_val.is_null()
+    {
+        return None;
+    }
+    if AXUIElementCopyAttributeValue(
+        element,
+        size_attr.as_concrete_TypeRef(),
+        &mut size_val,
+    ) != KAX_ERROR_SUCCESS
+        || size_val.is_null()
+    {
+        return None;
+    }
+    let mut p = CGPoint { x: 0.0, y: 0.0 };
+    let mut s = CGSize { w: 0.0, h: 0.0 };
+    let ok_p = AXValueGetValue(
+        pos_val,
+        point_type.as_concrete_TypeRef() as *const c_void,
+        &mut p as *mut _ as *mut c_void,
+    );
+    let ok_s = AXValueGetValue(
+        size_val,
+        size_type.as_concrete_TypeRef() as *const c_void,
+        &mut s as *mut _ as *mut c_void,
+    );
+    if !ok_p || !ok_s {
+        return None;
+    }
+    Some((p.x, p.y, s.w, s.h))
+}
+
+/// バナーらしい窓か: 画面内で小さく、上部にあるもの。
+/// ウィジェット (画面外) や通知センターパネル (巨大) を弾く。
+fn is_banner_bounds(b: Option<(f64, f64, f64, f64)>) -> bool {
+    match b {
+        Some((x, y, w, h)) => x >= 0.0 && y >= 0.0 && y < 500.0 && w >= 250.0 && h > 0.0 && h <= 300.0,
+        None => false,
+    }
+}
+/// 既存窓の走査 (起動直後・定期)。バナーらしい窓だけ拾う。
 /// observerと二重になってもmark_fresh_contentで弾く。
 fn scan_once(handle: &AppHandle) {
     let texts_list = all_window_texts();
     let settings = handle.state::<AppSettings>();
-    for texts in texts_list {
+    for (texts, bounds) in texts_list {
+        if !is_banner_bounds(bounds) {
+            continue;
+        }
         if texts.is_empty() || texts.len() > 6 {
             continue;
         }
@@ -149,8 +218,8 @@ fn scan_once(handle: &AppHandle) {
     }
 }
 
-/// NotificationCenter系プロセスの全窓テキストを集める。
-fn all_window_texts() -> Vec<Vec<String>> {
+/// NotificationCenter系プロセスの全窓テキストを集める (矩形付き)。
+fn all_window_texts() -> Vec<(Vec<String>, Option<(f64, f64, f64, f64)>)> {
     let mut out = Vec::new();
     for proc in ["NotificationCenter", "UserNotificationCenter"] {
         let pid = match process_pid(proc) {
@@ -163,9 +232,10 @@ fn all_window_texts() -> Vec<Vec<String>> {
                 continue;
             }
             for win in ax_windows(app_el) {
+                let bounds = ax_bounds(win);
                 let texts = collect_texts(win, 0);
                 if !texts.is_empty() {
-                    out.push(texts);
+                    out.push((texts, bounds));
                 }
             }
         }
@@ -206,20 +276,35 @@ fn process_pid(name: &str) -> Option<c_int> {
         })
 }
 
-/// 許可済みなら監視を開始する。未許可なら何もしない。
+/// 監視が開始済みか (許可後に自動開始される)。
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+pub fn watching() -> bool {
+    STARTED.load(Ordering::SeqCst)
+}
+
+/// 許可済みなら監視を開始する。未許可なら許可されるまで待ち続ける。
+/// (設定画面で後から許可した場合や再起動なしで有効化するため)
 /// observer (新着) + 5秒走査 (既存・取りこぼし) の二経路。
 pub fn start_if_trusted(handle: AppHandle) {
-    if !trusted() {
-        eprintln!("[readapp] ax capture: accessibility not granted yet");
-        return;
-    }
-    // 既存分をまず拾う
-    scan_once(&handle);
-    let poller = handle.clone();
     std::thread::spawn(move || loop {
+        if !STARTED.load(Ordering::SeqCst) && trusted() {
+            STARTED.store(true, Ordering::SeqCst);
+            // 既存分をまず拾う
+            scan_once(&handle);
+            let poller = handle.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(5));
+                scan_once(&poller);
+            });
+            start_observer(handle.clone());
+            return;
+        }
         std::thread::sleep(Duration::from_secs(5));
-        scan_once(&poller);
     });
+}
+
+fn start_observer(handle: AppHandle) {
     let Some(pid) = process_pid("NotificationCenter")
         .or_else(|| process_pid("UserNotificationCenter"))
     else {
@@ -265,6 +350,11 @@ extern "C" fn observer_callback(
     // SAFETY: refconは起動時にBox化したAppHandleで、アプリ終了まで生きる。
     let handle = unsafe { &*(refcon as *const AppHandle) };
     let settings = handle.state::<AppSettings>();
+    // SAFETY: elementは通知元プロセスの有効なAX要素。
+    let bounds = unsafe { ax_bounds(element) };
+    if !is_banner_bounds(bounds) {
+        return;
+    }
     // SAFETY: elementは通知元プロセスの有効なAX要素。
     let texts = unsafe { collect_texts(element, 0) };
     if texts.is_empty() || texts.len() > 6 {

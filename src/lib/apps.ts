@@ -31,10 +31,9 @@ export interface Persona {
 
 export interface FullState {
   enabled: Record<string, boolean>;
-  mode: Record<string, string>;
-  persona: Record<string, string>;
-  voice: Record<string, string>;
-  default_persona: string;
+  mode: string;
+  persona: string;
+  voice: string;
   onboarded: boolean;
 }
 

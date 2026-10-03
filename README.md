@@ -33,11 +33,18 @@ PC上の他アプリの通知を取得し、内容をローカルAIでキャラ�
 
 ### 配信形態
 
-| 形態 | 通知取得 | 用途 |
-|---|---|---|
-| macOS dmg版 | Accessibility経由の直接監視（許可後すぐ使える）＋ Shortcuts互換 | 自由配信。MAS審査なし |
-| macOS MAS版 | Shortcuts Automation → App Intent | Store配信。オンボーディングはショートカットDL+有効化 |
-| Windows版 | UserNotificationListener（公式API） | 本来あるべき完成形。権限1回で完結 |
+| 形態 | 通知取得 | ビルド | 実行場所 |
+|---|---|---|---|
+| macOS dmg版 | Accessibility経由の直接監視（許可後すぐ使える）＋ Shortcuts互換 | `npm run build:dmg` | このMac |
+| macOS MAS版 | 同上（審査指摘が出たら調整） | `npm run package:mas`（要profile＋証明書） | このMac |
+| Windows版 | UserNotificationListener（公式API） | `npm run build:win` | Windows上 |
+
+コードは1つで、OS差分はRustモジュール、版差分は署名・entitlements・
+バンドル設定で吸収する。取得方式に版分岐は置かない
+（どちらも直接監視＋Shortcuts互換。MAS審査で指摘されたら調整する）。
+
+MAS配布の残作業: provisioning profile取得、`3rd Party Mac Installer`
+証明書発行、公証、App Store Connect登録。詳細は `scripts/package-mas.sh`。
 
 Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）が公式capabilityで、アプリ識別・通知本文・リアルタイムイベントまで公開APIで取得できる。Macのdmg版はAX監視、MAS版はShortcuts経由で、同じUI/サービスに流す。
 

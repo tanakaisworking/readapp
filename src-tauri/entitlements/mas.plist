@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- MAS版のサンドボックス権限。dmg版では使わない。 -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <!-- 将来のPremium音声 (サーバーTTS) 用 -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- 配布ショートカットの保存先 -->
+  <key>com.apple.security.files.downloads.read-write</key>
+  <true/>
+</dict>
+</plist>

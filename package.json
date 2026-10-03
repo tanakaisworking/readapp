@@ -9,7 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:helper": "mkdir -p src-tauri/binaries && swiftc -parse-as-library -O -o src-tauri/binaries/fm-helper-aarch64-apple-darwin src-tauri/helper-src/fm-helper.swift",
-    "build:shortcuts": "node scripts/build-shortcuts.mjs"
+    "build:shortcuts": "node scripts/build-shortcuts.mjs",
+    "build:dmg": "npm run tauri build && npm run sign:local",
+    "build:win": "bash scripts/build-win.sh",
+    "package:mas": "bash scripts/package-mas.sh",
+    "sign:local": "codesign --deep --force --verify --sign \"Developer ID Application: HIBACHI inc. (TYX92DB6TA)\" src-tauri/target/release/bundle/macos/readapp.app"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.3.3",

@@ -79,11 +79,11 @@ pub fn persona_instruction(id: &str) -> String {
 
 /// 変換の振り分け。ローカルAIが使えない場合は素文にフォールバックする
 /// (読み上げ自体は止めない)。
-pub fn transform_text(settings: &AppSettings, app_id: &str, raw_text: &str) -> String {
-    if settings.mode_of(app_id) == Mode::Raw {
+pub fn transform_text(settings: &AppSettings, raw_text: &str) -> String {
+    if settings.mode() == Mode::Raw {
         return raw::transform(raw_text);
     }
-    let persona_id = settings.persona_of(app_id);
+    let persona_id = settings.persona();
     #[cfg(target_os = "macos")]
     {
         if let Some(helper) = settings.helper_path() {
