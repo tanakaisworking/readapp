@@ -69,12 +69,16 @@ pub fn personas() -> Vec<Persona> {
     ]
 }
 
+/// 入力は「<アプリ名>の通知。<本文>」(speak_now参照)。アプリ名を落とさせない。
+const KEEP_APP_NAME: &str = "冒頭の「〇〇の通知」の〇〇はアプリ名なので、言い換え文に必ず含める。";
+
 pub fn persona_instruction(id: &str) -> String {
-    personas()
+    let base = personas()
         .into_iter()
         .find(|p| p.id == id)
         .map(|p| p.instruction)
-        .unwrap_or_else(|| "渡された通知内容を一文の話し言葉で言い換える。出力は言い換え文のみ。".into())
+        .unwrap_or_else(|| "渡された通知内容を一文の話し言葉で言い換える。出力は言い換え文のみ。".into());
+    format!("{base}{KEEP_APP_NAME}")
 }
 
 /// 変換の振り分け。ローカルAIが使えない場合は素文にフォールバックする

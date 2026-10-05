@@ -46,6 +46,20 @@ export const PERSONA_ACCENTS: Record<string, string> = {
   shiro: "#B9A8F0",
 };
 
+// 吹き出しの見本。キャラの口調 (Rust側 persona instruction) に合わせる。
+const PERSONA_SAMPLES: Record<string, string> = {
+  mio: "Claudeの作業、\n終わったみたいだよ",
+  aoi: "Claudeの作業が\n完了したようです",
+  ren: "Claudeの作業、\n終わったってさ",
+  shiro: "Claude、作業完了。",
+};
+
+// 素文モードは通知文そのまま読む。
+export function speechSample(personaId: string, mode: string): string {
+  if (mode === "raw") return "作業が完了しました。";
+  return PERSONA_SAMPLES[personaId] ?? PERSONA_SAMPLES.mio;
+}
+
 export function personaAccent(id: string): string {
   return PERSONA_ACCENTS[id] ?? "#B9A8F0";
 }

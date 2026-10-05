@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { PersonaPicker } from "@/components/persona-picker";
 import type { Persona } from "@/lib/apps";
@@ -27,6 +28,25 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
       invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
     }
   }, [platform]);
+
+  // システム設定で許可して戻ってきたら反映する
+  useEffect(() => {
+    if (platform !== "macos" || axOn) return;
+    const recheck = () =>
+      invoke<boolean>("ax_trusted").then((ok) => ok && setAxOn(true)).catch(() => {});
+    const id = setInterval(recheck, 2000);
+    let unlisten: (() => void) | null = null;
+    getCurrentWindow()
+      .onFocusChanged((e) => e.payload && void recheck())
+      .then((f) => {
+        unlisten = f;
+      })
+      .catch(() => {});
+    return () => {
+      clearInterval(id);
+      unlisten?.();
+    };
+  }, [platform, axOn]);
 
   const requestAx = async () => {
     const ok = await invoke<boolean>("ax_request_access").catch(() => false);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { FullState, Persona } from "@/lib/apps";
+import { KNOWN_APPS, type FullState, type Persona } from "@/lib/apps";
 
 export function useSettings() {
   const [state, setState] = useState<FullState | null>(null);
@@ -73,6 +73,7 @@ export function useSettings() {
 
 export type SettingsApi = ReturnType<typeof useSettings>;
 
+// 未設定はカタログのアプリだけON (Rust側 should_speak と同じ規則)。
 export function isOn(state: FullState, id: string): boolean {
-  return state.enabled[id] ?? true;
+  return state.enabled[id] ?? KNOWN_APPS.some((a) => a.id === id);
 }

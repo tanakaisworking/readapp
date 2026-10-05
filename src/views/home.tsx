@@ -13,6 +13,7 @@ import {
   VOICES,
   knownApp,
   personaAccent,
+  speechSample,
   type Persona,
 } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
@@ -35,7 +36,7 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [watching, setWatching] = useState(false);
   const [lastAt, setLastAt] = useState<number | null>(null);
-  const [observed, setObserved] = useState<string[]>([]);
+  const [observed, setObserved] = useState<{ id: string; name: string }[]>([]);
   const displayOf = (id: string) =>
     state.names[id] ?? knownApp(id).name;
   const [systemVoices, setSystemVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
@@ -43,7 +44,7 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
   const onCount = KNOWN_APPS.filter((a) => isOn(state, a.id)).length;
   const extraIds = Object.keys(state.enabled).filter((id) => !KNOWN_APPS.some((a) => a.id === id));
   const newcomers = observed.filter(
-    (id) => !KNOWN_APPS.some((a) => a.id === id) && !(id in state.enabled),
+    (o) => !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
   );
   const totalOn = onCount + extraIds.filter((id) => isOn(state, id)).length;
   const active = personas.find((p) => p.id === state.persona);
@@ -61,7 +62,7 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
       .then(setSystemVoices)
       .catch(() => {});
     const fetchObserved = () =>
-      invoke<string[]>("get_observed_apps").then(setObserved).catch(() => {});
+      invoke<{ id: string; name: string }[]>("get_observed_apps").then(setObserved).catch(() => {});
     void fetchObserved();
     let unlisten: (() => void) | null = null;
     listen("observed-changed", () => void fetchObserved())
@@ -132,11 +133,12 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
       filters: [{ name: "Application", extensions: ["app"] }],
     }).catch(() => null);
     if (typeof picked !== "string") return;
-    const file = picked.split("/").pop() ?? "";
-    const display = file.replace(/\.app$/i, "");
-    const id = display.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 32);
-    if (!id) return;
-    await api.setEnabled(id, true, display);
+    // 通知に出るアプリ名 (ローカライズ名) と同じキーにする
+    const app = await invoke<{ id: string; name: string } | null>("resolve_app", { path: picked }).catch(
+      () => null,
+    );
+    if (!app) return;
+    await api.setEnabled(app.id, true, app.name);
   };
 
   return (
@@ -145,12 +147,16 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
         <span
           className={cn(
             "h-2.5 w-2.5 rounded-full",
-            totalOn > 0 ? "bg-emerald-500" : "bg-border",
+            state.speak_all || totalOn > 0 ? "bg-emerald-500" : "bg-border",
           )}
         />
         <h1 className="text-[15px] font-semibold">readapp</h1>
         <p className="ml-auto text-xs text-muted-foreground">
-          {totalOn > 0 ? `${totalOn}件のアプリを読み上げ中` : "おやすみ中"}
+          {state.speak_all
+            ? "すべての通知を読み上げ中"
+            : totalOn > 0
+              ? `${totalOn}件のアプリを読み上げ中`
+              : "おやすみ中"}
         </p>
       </header>
       <p className="mt-3 text-[22px] font-semibold leading-snug">通知を、好きな声に。</p>
@@ -207,10 +213,8 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
                   />
                 </div>
               )}
-              <p className="mt-3 rounded-lg bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
-                「Claudeの作業、
-                <br />
-                終わったみたいだよ」
+              <p className="mt-3 whitespace-pre-line rounded-lg bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
+                「{speechSample(active.id, state.mode)}」
               </p>
               <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-surface-muted p-1" role="group" aria-label="話し方">
                 {[
@@ -292,7 +296,7 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold"
                   style={{ backgroundColor: `${app.color}2e` }}
                 >
-                  {app.name.slice(0, 1)}
+                  {displayOf(app.id).slice(0, 1)}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{displayOf(app.id)}</span>
@@ -318,10 +322,10 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
               通知が来ていたアプリです。追加すると読み上げます。
             </p>
             <ul className="mt-2 space-y-1.5">
-              {newcomers.map((id) => (
-                <li key={id} className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm">{displayOf(id)}</span>
-                  <Button size="sm" variant="outline" onClick={() => void api.setEnabled(id, true)}>
+              {newcomers.map((o) => (
+                <li key={o.id} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm">{o.name}</span>
+                  <Button size="sm" variant="outline" onClick={() => void api.setEnabled(o.id, true, o.name)}>
                     <Plus className="h-3.5 w-3.5" />
                     追加
                   </Button>

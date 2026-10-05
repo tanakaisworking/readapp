@@ -270,17 +270,47 @@ impl AppSettings {
     }
 }
 
+#[derive(Deserialize)]
+struct CatalogApp {
+    id: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct Catalog {
+    apps: Vec<CatalogApp>,
+}
+
+/// アプリカタログ (UIと共有する catalog.json が正本)。
+fn catalog() -> &'static [CatalogApp] {
+    static CATALOG: std::sync::OnceLock<Vec<CatalogApp>> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str::<Catalog>(include_str!("../../src/lib/catalog.json"))
+            .map(|c| c.apps)
+            .unwrap_or_default()
+    })
+}
+
 /// notification → shouldSpeak() → transform() → speak() の shouldSpeak 部分。
-/// すべて読み上げモードか、個別ONのアプリを読む。未登録アプリは読む (default true)。
+/// すべて読み上げモードなら全部読む。そうでなければ個別ONのアプリだけ。
+/// 未設定はカタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)。
 fn should_speak(settings: &AppSettings, app_id: &str) -> bool {
     if settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
         return true;
     }
-    settings
+    let explicit = settings
         .enabled
         .lock()
-        .map(|m| m.get(app_id).copied().unwrap_or(true))
-        .unwrap_or(true)
+        .map(|m| m.get(app_id).copied())
+        .unwrap_or(None);
+    explicit.unwrap_or_else(|| catalog().iter().any(|a| a.id == app_id))
+}
+
+/// 読み上げで使うアプリ名。登録名→カタログ名の順。分からなければNone。
+fn app_label(settings: &AppSettings, app_id: &str) -> Option<String> {
+    settings
+        .display_name(app_id)
+        .or_else(|| catalog().iter().find(|a| a.id == app_id).map(|a| a.name.clone()))
 }
 
 #[tauri::command]
@@ -457,10 +487,44 @@ fn get_last_received(state: State<'_, AppSettings>) -> Option<ReceivedNotificati
     state.last_received.lock().map(|l| l.clone()).unwrap_or(None)
 }
 
-/// 見かけた通知元の一覧 (追加候補用)。
+#[derive(Serialize)]
+struct AppEntry {
+    id: String,
+    name: String,
+}
+
+/// 見かけた通知元の一覧 (追加候補用)。表示名付き。
 #[tauri::command]
-fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<String> {
-    state.observed_apps()
+fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<AppEntry> {
+    state
+        .observed_apps()
+        .into_iter()
+        .map(|id| AppEntry {
+            name: app_label(&state, &id).unwrap_or_else(|| id.clone()),
+            id,
+        })
+        .collect()
+}
+
+/// ファイル選択した .app を設定キーと表示名に変換する。
+/// 表示名はFinderと同じローカライズ名 (Notes.app → メモ) を使い、バナーのアプリ名と揃える。
+#[tauri::command]
+fn resolve_app(path: String) -> Option<AppEntry> {
+    let p = std::path::Path::new(&path);
+    let stem = p.file_stem()?.to_string_lossy().to_string();
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("mdls")
+        .args(["-raw", "-name", "kMDItemDisplayName"])
+        .arg(p)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".app").to_string())
+        .filter(|n| !n.is_empty() && n != "(null)")
+        .unwrap_or(stem);
+    #[cfg(not(target_os = "macos"))]
+    let name = stem;
+    let id = notifications::app_id_for(&name);
+    Some(AppEntry { id, name })
 }
 
 fn shortcut_name(app_id: &str) -> Option<String> {
@@ -575,6 +639,12 @@ pub(crate) fn speak_notification(
     if !should_speak(settings, app_id) {
         return None;
     }
+    speak_now(settings, app_id, title, body)
+}
+
+/// transform → speak (ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
+/// 「Claudeの作業、終わったみたいだよ」のように言えるようにする。
+fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> Option<String> {
     let raw = if title.is_empty() {
         body.to_string()
     } else if body.is_empty() {
@@ -586,7 +656,11 @@ pub(crate) fn speak_notification(
     if raw.is_empty() {
         return None;
     }
-    let text = transform::transform_text(settings, &raw);
+    let input = match (settings.mode(), app_label(settings, app_id)) {
+        (Mode::Persona, Some(name)) => format!("{name}の通知。{raw}"),
+        _ => raw,
+    };
+    let text = transform::transform_text(settings, &input);
     speech::system::speak(&text, &settings.voice());
     Some(text)
 }
@@ -637,8 +711,8 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
     }
 }
 
-/// テスト用: 実通知なしでパイプライン一気通貫 (M1)。
-/// OFFのアプリは "skipped" を返して喋らない。
+/// 「試しに喋る」: 実通知なしで変換→発声まで通す (M1)。
+/// 試し聞きなのでON/OFFに関わらず喋る。
 #[tauri::command]
 fn test_speak(
     state: State<'_, AppSettings>,
@@ -646,7 +720,7 @@ fn test_speak(
     title: String,
     body: String,
 ) -> Result<String, String> {
-    Ok(speak_notification(&state, &app_id, &title, &body).unwrap_or_else(|| "skipped".to_string()))
+    Ok(speak_now(&state, &app_id, &title, &body).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -677,6 +751,7 @@ pub fn run() {
             run_shortcut,
             get_last_received,
             get_observed_apps,
+            resolve_app,
             get_state,
             display_name,
             get_settings,
@@ -791,9 +866,34 @@ mod tests {
     }
 
     #[test]
-    fn unknown_app_speaks_by_default() {
+    fn unlisted_app_is_silent_by_default() {
         let settings = AppSettings::default();
+        assert!(!should_speak(&settings, "dev.test"));
+    }
+
+    #[test]
+    fn catalog_app_speaks_by_default() {
+        let settings = AppSettings::default();
+        assert!(should_speak(&settings, "slack"));
+        assert!(should_speak(&settings, "calendar"));
+    }
+
+    #[test]
+    fn added_app_speaks_and_speak_all_covers_unlisted() {
+        let settings = AppSettings::default();
+        settings.enabled.lock().unwrap().insert("dev.test".to_string(), true);
         assert!(should_speak(&settings, "dev.test"));
+        *settings.speak_all.lock().unwrap() = true;
+        assert!(should_speak(&settings, "other"));
+    }
+
+    #[test]
+    fn app_label_prefers_saved_name_then_catalog() {
+        let settings = AppSettings::default();
+        assert_eq!(app_label(&settings, "calendar").as_deref(), Some("カレンダー"));
+        assert_eq!(app_label(&settings, "preview"), None);
+        settings.names.lock().unwrap().insert("googlechrome".into(), "Google Chrome".into());
+        assert_eq!(app_label(&settings, "googlechrome").as_deref(), Some("Google Chrome"));
     }
 
     #[test]
