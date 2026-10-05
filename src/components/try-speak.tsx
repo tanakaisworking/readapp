@@ -43,13 +43,22 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const alive = useRef(true);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      // 画面を離れたら、待っている非同期処理もタイマーを登録し直さない
+      alive.current = false;
       timers.current.forEach((t) => clearTimeout(t));
-    },
-    [],
-  );
+    };
+  }, []);
+
+  /** 受け取った直後などの送り直しを、少しの間止める */
+  const coolDown = () => {
+    setCooling(true);
+    timers.current.push(setTimeout(() => alive.current && setCooling(false), COOLDOWN_MS));
+  };
 
   const change = (v: string) => {
     setText(v);
@@ -63,9 +72,10 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
   const send = async () => {
     const body = text.trim();
     if (!body || busy.current || cooling) return;
-    // 通知の仕組みはmacOSのみ。ほかは直接喋らせる
+    // 通知の仕組みはmacOSのみ。ほかは直接喋らせる (連打で読み上げが積み重ならないよう少し止める)
     if (platform !== "macos") {
       onDirect(body);
+      coolDown();
       return;
     }
     busy.current = true; // 許可の確認待ちの間も二重に送らない
@@ -87,15 +97,14 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
     setStatus("waiting");
     const started = Date.now();
     const poll = async () => {
+      if (!alive.current) return;
       // 送る前より受信回数が増えたら今回の通知が届いた (同じ秒の古い受信と取り違えない)
       const done = (await readappCount()) > before;
+      if (!alive.current) return;
       if (done || Date.now() - started > WAIT_MS) {
         busy.current = false;
         setStatus(done ? "received" : "missed");
-        if (done) {
-          setCooling(true);
-          timers.current.push(setTimeout(() => setCooling(false), COOLDOWN_MS));
-        }
+        if (done) coolDown();
         return;
       }
       timers.current.push(setTimeout(() => void poll(), 500));
@@ -136,7 +145,16 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
                 ? "通知が readapp に届きませんでした。ショートカット「readapp通知」がオンか確かめてください。まだなら「読み上げるアプリ」の「ほかのアプリを読み上げる」から追加できます。"
                 : "通知が readapp に届きませんでした。「直接監視」を許可しているか確かめてください。")}
           </p>
-          <Button size="sm" variant="ghost" className="mt-1 -ml-2" onClick={() => onDirect(text.trim())}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="mt-1 -ml-2"
+            disabled={cooling}
+            onClick={() => {
+              onDirect(text.trim());
+              coolDown();
+            }}
+          >
             通知なしで喋らせる
           </Button>
         </div>
