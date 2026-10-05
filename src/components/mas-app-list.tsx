@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ExternalLink, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -43,13 +43,19 @@ function saveState(s: SetupState) {
   }
 }
 
-/** ショートカットの追加状況と受信時刻から、アプリごとの状態を更新する */
-function nextState(cur: SetupState, apps: MasApp[], receivedAt: Record<string, number>): SetupState {
+/** ショートカットの追加状況と受信時刻から、アプリごとの状態を更新する。
+ *  addStartedAt: この画面で「追加」を押した時刻。検出 (数秒おき) より前に届いた通知も確認に数えるため基準にする */
+function nextState(
+  cur: SetupState,
+  apps: MasApp[],
+  receivedAt: Record<string, number>,
+  addStartedAt: Record<string, number>,
+): SetupState {
   const now = Math.floor(Date.now() / 1000);
   const next: SetupState = {};
   for (const app of apps) {
     if (!app.added) continue; // 消されたら確認も取り消す
-    const prev = cur[app.id] ?? { addedAt: now, verified: false };
+    const prev = cur[app.id] ?? { addedAt: addStartedAt[app.id] ?? now, verified: false };
     const at = receivedAt[app.id];
     next[app.id] = { addedAt: prev.addedAt, verified: prev.verified || (at !== undefined && at >= prev.addedAt) };
   }
@@ -60,6 +66,7 @@ export function MasAppList() {
   const [apps, setApps] = useState<MasApp[] | null>(null);
   const [setup, setSetup] = useState<SetupState>(loadState);
   const [error, setError] = useState<string | null>(null);
+  const addStartedAt = useRef<Record<string, number>>({});
 
   const refresh = useCallback(async () => {
     const [list, observed] = await Promise.all([
@@ -71,7 +78,7 @@ export function MasAppList() {
     const receivedAt: Record<string, number> = {};
     for (const o of observed) if (o.at != null) receivedAt[o.id] = o.at;
     setSetup((cur) => {
-      const next = nextState(cur, list, receivedAt);
+      const next = nextState(cur, list, receivedAt, addStartedAt.current);
       if (JSON.stringify(next) !== JSON.stringify(cur)) saveState(next);
       return next;
     });
@@ -142,13 +149,14 @@ export function MasAppList() {
                 {!app.added ? (
                   <Button
                     size="sm"
-                    onClick={() =>
+                    onClick={() => {
+                      addStartedAt.current[app.id] = Math.floor(Date.now() / 1000);
                       void run(
                         "add_app_automation",
                         { appId: app.id },
                         `${app.name}のショートカットを開けませんでした。アプリを入れ直してください。`,
-                      )
-                    }
+                      );
+                    }}
                   >
                     <Plus />
                     追加

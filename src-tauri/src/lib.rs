@@ -38,7 +38,7 @@ pub struct AppSettings {
     /// イベント送信用 (setup時に設定)。
     app_handle: Mutex<Option<tauri::AppHandle>>,
     /// 最近読んだ通知 (重複防止用。実行時のみ)。
-    recent_spoken: Mutex<Vec<(String, Route, std::time::Instant)>>,
+    recent_spoken: Mutex<Vec<RecentSpoken>>,
     /// 通知元ごとの最終受信時刻 (UNIX秒。設定の確認表示用。実行時のみ)。
     received_at: Mutex<HashMap<String, u64>>,
 }
@@ -870,10 +870,18 @@ pub(crate) fn speak_notification(
     if !should_speak(settings, app_id, route) {
         return None;
     }
-    if !fresh_notification(settings, &format!("{title}\n{body}"), route) {
+    if !fresh_notification(settings, app_id, &format!("{title}\n{body}"), route) {
         return None;
     }
     speak_now(settings, app_id, title, body)
+}
+
+/// 最近読んだ通知 (重複防止用)。
+struct RecentSpoken {
+    key: String,
+    app_id: String,
+    route: Route,
+    at: std::time::Instant,
 }
 
 /// 通知の届き方。同じ通知が別の経路から重ねて届く時だけ1回にまとめる。
@@ -898,8 +906,9 @@ fn notification_key(text: &str) -> String {
 }
 
 /// 未読なら true (かつ既読化する)。窓内に「別の経路で」同じ通知を読んでいれば false。
-/// 同じ経路で同じ文が続くのは別の通知なので読む (ただし2秒以内はほぼ同時に届いた重複とみなす)。
-fn fresh_notification(settings: &AppSettings, text: &str, route: Route) -> bool {
+/// 同じ経路で同じ文が続くのは別の通知なので読む。ただし同じアプリから2秒以内の同文は、
+/// ほぼ同時に届いた重複 (汎用とアプリ別の両オートメーション) とみなす。
+fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: Route) -> bool {
     let key = notification_key(text);
     if key.is_empty() {
         return true;
@@ -908,16 +917,17 @@ fn fresh_notification(settings: &AppSettings, text: &str, route: Route) -> bool 
     let Ok(mut recent) = settings.recent_spoken.lock() else {
         return true;
     };
-    recent.retain(|(_, _, at)| now.duration_since(*at) < DUPLICATE_WINDOW);
-    if let Some(i) = recent
-        .iter()
-        .position(|(k, r, at)| *k == key && (*r != route || now.duration_since(*at) < SAME_ROUTE_WINDOW))
-    {
+    recent.retain(|r| now.duration_since(r.at) < DUPLICATE_WINDOW);
+    if let Some(i) = recent.iter().position(|r| {
+        r.key == key
+            && (r.route != route
+                || (r.app_id == app_id && now.duration_since(r.at) < SAME_ROUTE_WINDOW))
+    }) {
         // 対になる受信を消費する (3回目以降の同文は改めて判定する)
         recent.remove(i);
         return false;
     }
-    recent.push((key, route, now));
+    recent.push(RecentSpoken { key, app_id: app_id.to_string(), route, at: now });
     true
 }
 
@@ -1010,7 +1020,7 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
         match intent_target(&app) {
             IntentTarget::Always => {
                 record_received(&settings, INTENT_APP_ID, "", &text);
-                if fresh_notification(&settings, &text, Route::Shortcut) {
+                if fresh_notification(&settings, INTENT_APP_ID, &text, Route::Shortcut) {
                     speak_now(&settings, INTENT_APP_ID, "", &text);
                 }
             }
@@ -1329,36 +1339,44 @@ mod tests {
     fn same_notification_from_two_routes_is_fresh_once() {
         let settings = AppSettings::default();
         // 直接監視は「タイトル。本文」、部品は「タイトル\n本文」で届く
-        assert!(fresh_notification(&settings, "会議。15時から", Route::Direct));
-        assert!(!fresh_notification(&settings, "会議\n15時から", Route::Shortcut));
-        assert!(fresh_notification(&settings, "会議。16時から", Route::Direct));
+        assert!(fresh_notification(&settings, "slack", "会議。15時から", Route::Direct));
+        assert!(!fresh_notification(&settings, "slack", "会議\n15時から", Route::Shortcut));
+        assert!(fresh_notification(&settings, "slack", "会議。16時から", Route::Direct));
     }
 
     #[test]
     fn same_text_on_same_route_at_once_is_one_notification() {
         // 汎用とアプリ別のオートメーションが同じ通知で同時に動いた場合
         let settings = AppSettings::default();
-        assert!(fresh_notification(&settings, "了解。", Route::Shortcut));
-        assert!(!fresh_notification(&settings, "了解。", Route::Shortcut));
+        assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+        assert!(!fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+    }
+
+    #[test]
+    fn same_text_from_another_app_at_once_is_read() {
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+        assert!(fresh_notification(&settings, "discord", "了解。", Route::Shortcut));
     }
 
     #[test]
     fn same_text_on_same_route_later_is_another_notification() {
         let settings = AppSettings::default();
         let old = std::time::Instant::now() - SAME_ROUTE_WINDOW - std::time::Duration::from_millis(10);
-        settings
-            .recent_spoken
-            .lock()
-            .unwrap()
-            .push((notification_key("了解。"), Route::Direct, old));
-        assert!(fresh_notification(&settings, "了解。", Route::Direct));
+        settings.recent_spoken.lock().unwrap().push(RecentSpoken {
+            key: notification_key("了解。"),
+            app_id: "slack".into(),
+            route: Route::Direct,
+            at: old,
+        });
+        assert!(fresh_notification(&settings, "slack", "了解。", Route::Direct));
     }
 
     #[test]
     fn duplicate_key_keeps_meaningful_symbols() {
         let settings = AppSettings::default();
-        assert!(fresh_notification(&settings, "予算1.5万円", Route::Direct));
-        assert!(fresh_notification(&settings, "予算15万円", Route::Shortcut));
+        assert!(fresh_notification(&settings, "slack", "予算1.5万円", Route::Direct));
+        assert!(fresh_notification(&settings, "slack", "予算15万円", Route::Shortcut));
     }
 
     #[test]
