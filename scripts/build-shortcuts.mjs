@@ -71,12 +71,13 @@ writeAutomation(join(automationDir, "readapp通知.shortcut"), [READAPP]);
 // カタログの mac が空のアプリ (カレンダー: 通知の中身がショートカットに渡らない) は作らない。
 // 未インストールのアプリが入っていると、ショートカット側の表示が崩れ「＋」も効かなくなるため、
 // バンドルIDごとに1ファイル作り、アプリ側で入っているものを選んで開く。
+// 同じアプリに複数の版 (バンドルID) がある時は2つ目以降の名前に番号を付ける (src-tauri の app_automation_name と同じ規則)。
 for (const app of catalog.apps) {
-  for (const mac of app.mac ?? []) {
+  for (const [i, mac] of (app.mac ?? []).entries()) {
     const dir = join(automationDir, "apps", mac.bundleId);
     mkdirSync(dir, { recursive: true });
     writeAutomation(
-      join(dir, `readapp通知-${app.id}.shortcut`),
+      join(dir, `readapp通知-${app.id}${i === 0 ? "" : `-${i + 1}`}.shortcut`),
       [{ BundleIdentifier: mac.bundleId, Name: app.name, TeamIdentifier: mac.teamId }],
       app.name,
     );

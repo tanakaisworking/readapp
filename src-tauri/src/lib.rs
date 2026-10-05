@@ -39,6 +39,8 @@ pub struct AppSettings {
     app_handle: Mutex<Option<tauri::AppHandle>>,
     /// 最近読んだ通知 (重複防止用。実行時のみ)。
     recent_spoken: Mutex<Vec<(String, Route, std::time::Instant)>>,
+    /// 通知元ごとの最終受信時刻 (UNIX秒。設定の確認表示用。実行時のみ)。
+    received_at: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +104,7 @@ impl Default for AppSettings {
             observed: Mutex::new(HashSet::new()),
             app_handle: Mutex::new(None),
             recent_spoken: Mutex::new(Vec::new()),
+            received_at: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -513,14 +516,24 @@ struct AppEntry {
     name: String,
 }
 
-/// 見かけた通知元の一覧 (追加候補用)。表示名付き。
+#[derive(Serialize)]
+struct ObservedApp {
+    id: String,
+    name: String,
+    /// 最終受信時刻 (UNIX秒)。この起動中に受信していなければ None
+    at: Option<u64>,
+}
+
+/// 見かけた通知元の一覧 (追加候補・設定の確認表示用)。表示名と最終受信時刻付き。
 #[tauri::command]
-fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<AppEntry> {
+fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<ObservedApp> {
+    let received = state.received_at.lock().map(|m| m.clone()).unwrap_or_default();
     state
         .observed_apps()
         .into_iter()
-        .map(|id| AppEntry {
+        .map(|id| ObservedApp {
             name: app_label(&state, &id).unwrap_or_else(|| id.clone()),
+            at: received.get(&id).copied(),
             id,
         })
         .collect()
@@ -723,8 +736,15 @@ fn send_test_notification() -> Result<(), String> {
 }
 
 /// アプリ別の通知オートメーションの名前 (= 同梱ファイル名)。
-fn app_automation_name(app_id: &str) -> String {
-    format!("{AUTOMATION_NAME}-{app_id}")
+/// 同じアプリに複数の版 (バンドルID) がある時は2つ目以降に番号を付けて区別する
+/// (版を差し替えた時に、古い版用のショートカットを追加済みと誤認しないように)。
+/// build-shortcuts.mjs の命名と同じ規則。
+fn app_automation_name(app_id: &str, variant: usize) -> String {
+    if variant == 0 {
+        format!("{AUTOMATION_NAME}-{app_id}")
+    } else {
+        format!("{AUTOMATION_NAME}-{app_id}-{}", variant + 1)
+    }
 }
 
 /// 追加済みのショートカット名 (NFCに揃える)。
@@ -748,14 +768,14 @@ fn installed_shortcut_names() -> Vec<String> {
     }
 }
 
-/// カタログのアプリのうち、このMacに入っている版のバンドルID。
-fn installed_bundle(app: &CatalogApp) -> Option<&str> {
+/// カタログのアプリのうち、このMacに入っている版 (何番目の版か, バンドルID)。
+fn installed_bundle(app: &CatalogApp) -> Option<(usize, &str)> {
     #[cfg(target_os = "macos")]
     {
         extern "C" {
             fn readapp_app_installed(bundle_id: *const std::os::raw::c_char) -> bool;
         }
-        app.mac.iter().map(|m| m.bundle_id.as_str()).find(|b| {
+        app.mac.iter().map(|m| m.bundle_id.as_str()).enumerate().find(|(_, b)| {
             std::ffi::CString::new(*b)
                 // SAFETY: NUL終端の文字列を渡し、呼び出し中は有効。
                 .map(|c| unsafe { readapp_app_installed(c.as_ptr()) })
@@ -783,11 +803,13 @@ fn mas_app_list() -> Vec<MasApp> {
     let names = installed_shortcut_names();
     catalog()
         .iter()
-        .filter(|a| installed_bundle(a).is_some())
-        .map(|a| MasApp {
-            id: a.id.clone(),
-            name: a.name.clone(),
-            added: names.iter().any(|n| *n == app_automation_name(&a.id)),
+        .filter_map(|a| {
+            let (variant, _) = installed_bundle(a)?;
+            Some(MasApp {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                added: names.iter().any(|n| *n == app_automation_name(&a.id, variant)),
+            })
         })
         .collect()
 }
@@ -796,14 +818,14 @@ fn mas_app_list() -> Vec<MasApp> {
 #[tauri::command]
 fn add_app_automation(app: tauri::AppHandle, app_id: String) -> Result<(), String> {
     let entry = catalog().iter().find(|a| a.id == app_id).ok_or("unknown app")?;
-    let bundle = installed_bundle(entry).ok_or("app not installed")?;
+    let (variant, bundle) = installed_bundle(entry).ok_or("app not installed")?;
     let file = app
         .path()
         .resource_dir()
         .map_err(|e| e.to_string())?
         .join("resources/automation/apps")
         .join(bundle)
-        .join(format!("{}.shortcut", app_automation_name(&app_id)));
+        .join(format!("{}.shortcut", app_automation_name(&app_id, variant)));
     if !file.is_file() {
         return Err("automation not found. run `npm run build:shortcuts`".to_string());
     }
@@ -865,6 +887,9 @@ pub(crate) enum Route {
 
 /// 直接監視とショートカットの両方で同じ通知を受けた時に1回だけ読むための窓。
 const DUPLICATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+/// 同じ経路でも、この間隔より短い同文は同じ通知とみなす
+/// (汎用とアプリ別のオートメーションが両方そのアプリを対象にしていると、ほぼ同時に2回届く)。
+const SAME_ROUTE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// 経路ごとの区切りの差 (直接監視は「タイトル。本文」、部品は「タイトル\n本文」) だけを無視する。
 /// 本文中の記号 (小数点など) は意味が変わるので残す。
@@ -873,7 +898,7 @@ fn notification_key(text: &str) -> String {
 }
 
 /// 未読なら true (かつ既読化する)。窓内に「別の経路で」同じ通知を読んでいれば false。
-/// 同じ経路で同じ文が続くのは別の通知なので読む。
+/// 同じ経路で同じ文が続くのは別の通知なので読む (ただし2秒以内はほぼ同時に届いた重複とみなす)。
 fn fresh_notification(settings: &AppSettings, text: &str, route: Route) -> bool {
     let key = notification_key(text);
     if key.is_empty() {
@@ -884,7 +909,10 @@ fn fresh_notification(settings: &AppSettings, text: &str, route: Route) -> bool 
         return true;
     };
     recent.retain(|(_, _, at)| now.duration_since(*at) < DUPLICATE_WINDOW);
-    if let Some(i) = recent.iter().position(|(k, r, _)| *k == key && *r != route) {
+    if let Some(i) = recent
+        .iter()
+        .position(|(k, r, at)| *k == key && (*r != route || now.duration_since(*at) < SAME_ROUTE_WINDOW))
+    {
         // 対になる受信を消費する (3回目以降の同文は改めて判定する)
         recent.remove(i);
         return false;
@@ -1012,12 +1040,16 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
     } else {
         format!("{}。{}", title, body)
     };
+    let at = now_secs();
     if let Ok(mut l) = settings.last_received.lock() {
         *l = Some(ReceivedNotification {
             app_id: app_id.to_string(),
             text,
-            at: now_secs(),
+            at,
         });
+    }
+    if let Ok(mut m) = settings.received_at.lock() {
+        m.insert(app_id.to_string(), at);
     }
 }
 
@@ -1204,10 +1236,12 @@ mod tests {
         assert!(catalog().iter().any(|a| !a.mac.is_empty()));
         for app in catalog() {
             // 名前検索がずれないよう、濁点・半濁点 (分解形になるもの) を含めない
-            let name = app_automation_name(&app.id);
-            assert_eq!(notifications::nfc(&name), name);
-            assert!(!name.chars().any(|c| matches!(c, '\u{3099}' | '\u{309A}')));
-            assert!(name.is_ascii() || !name.chars().any(|c| "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ".contains(c)));
+            for variant in 0..app.mac.len().max(1) {
+                let name = app_automation_name(&app.id, variant);
+                assert_eq!(notifications::nfc(&name), name);
+                assert!(!name.chars().any(|c| "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ".contains(c)));
+            }
+            assert_eq!(app_automation_name("chatgpt", 1), "readapp通知-chatgpt-2");
         }
     }
 
@@ -1301,9 +1335,22 @@ mod tests {
     }
 
     #[test]
-    fn same_text_on_same_route_is_another_notification() {
+    fn same_text_on_same_route_at_once_is_one_notification() {
+        // 汎用とアプリ別のオートメーションが同じ通知で同時に動いた場合
         let settings = AppSettings::default();
-        assert!(fresh_notification(&settings, "了解。", Route::Direct));
+        assert!(fresh_notification(&settings, "了解。", Route::Shortcut));
+        assert!(!fresh_notification(&settings, "了解。", Route::Shortcut));
+    }
+
+    #[test]
+    fn same_text_on_same_route_later_is_another_notification() {
+        let settings = AppSettings::default();
+        let old = std::time::Instant::now() - SAME_ROUTE_WINDOW - std::time::Duration::from_millis(10);
+        settings
+            .recent_spoken
+            .lock()
+            .unwrap()
+            .push((notification_key("了解。"), Route::Direct, old));
         assert!(fresh_notification(&settings, "了解。", Route::Direct));
     }
 

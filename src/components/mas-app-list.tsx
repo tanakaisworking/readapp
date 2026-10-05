@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 // MAS版「読み上げるアプリ」。
 // このMacに入っている有名アプリごとに、そのアプリだけが通知元の通知オートメーションを1クリックで追加する。
 // 追加済みかは shortcuts list で分かるが、オンにしたかは分からないので、
-// そのアプリの通知を一度受け取ったら「受け取っています」にする (受信記録はこの端末に保存)。
+// 追加した後にそのアプリの通知を受け取ったら「受け取っています」にする (確認済みはこの端末に保存)。
+// ショートカット側で削除されたら確認を取り消し、再追加後の受信で確かめ直す。
 // 一覧にないアプリは「ほかのアプリ」から汎用のひな形で追加してもらう。
 
 interface MasApp {
@@ -20,43 +21,60 @@ interface MasApp {
   added: boolean;
 }
 
-const VERIFIED_KEY = "readapp.verifiedApps";
+const STORE_KEY = "readapp.appSetup";
 
-function loadVerified(): string[] {
+/** アプリごとの状態: 追加を確認した時刻 (UNIX秒) と、その後に受信して確認できたか */
+type SetupState = Record<string, { addedAt: number; verified: boolean }>;
+
+function loadState(): SetupState {
   try {
-    const v = JSON.parse(localStorage.getItem(VERIFIED_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    const v = JSON.parse(localStorage.getItem(STORE_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as SetupState) : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
-function saveVerified(ids: string[]) {
+function saveState(s: SetupState) {
   try {
-    localStorage.setItem(VERIFIED_KEY, JSON.stringify(ids));
+    localStorage.setItem(STORE_KEY, JSON.stringify(s));
   } catch {
     /* 保存できなくても表示はできる */
   }
 }
 
+/** ショートカットの追加状況と受信時刻から、アプリごとの状態を更新する */
+function nextState(cur: SetupState, apps: MasApp[], receivedAt: Record<string, number>): SetupState {
+  const now = Math.floor(Date.now() / 1000);
+  const next: SetupState = {};
+  for (const app of apps) {
+    if (!app.added) continue; // 消されたら確認も取り消す
+    const prev = cur[app.id] ?? { addedAt: now, verified: false };
+    const at = receivedAt[app.id];
+    next[app.id] = { addedAt: prev.addedAt, verified: prev.verified || (at !== undefined && at >= prev.addedAt) };
+  }
+  return next;
+}
+
 export function MasAppList() {
   const [apps, setApps] = useState<MasApp[] | null>(null);
-  const [verified, setVerified] = useState<string[]>(loadVerified);
+  const [setup, setSetup] = useState<SetupState>(loadState);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [list, observed] = await Promise.all([
       invoke<MasApp[]>("mas_app_list").catch(() => null),
-      invoke<{ id: string }[]>("get_observed_apps").catch(() => []),
+      invoke<{ id: string; at: number | null }[]>("get_observed_apps").catch(() => []),
     ]);
-    if (list) setApps(list);
-    if (observed.length) {
-      setVerified((cur) => {
-        const next = Array.from(new Set([...cur, ...observed.map((o) => o.id)]));
-        if (next.length !== cur.length) saveVerified(next);
-        return next;
-      });
-    }
+    if (!list) return;
+    setApps(list);
+    const receivedAt: Record<string, number> = {};
+    for (const o of observed) if (o.at != null) receivedAt[o.id] = o.at;
+    setSetup((cur) => {
+      const next = nextState(cur, list, receivedAt);
+      if (JSON.stringify(next) !== JSON.stringify(cur)) saveState(next);
+      return next;
+    });
   }, []);
 
   // ショートカットから戻った時と、通知元が増えた時、念のため数秒ごとに更新する
@@ -100,7 +118,7 @@ export function MasAppList() {
       ) : (
         <ul className="space-y-1.5">
           {apps.map((app) => {
-            const ok = verified.includes(app.id);
+            const ok = app.added && (setup[app.id]?.verified ?? false);
             const status = ok ? "受け取っています" : app.added ? "ショートカットでオンにしてください" : "まだ追加していません";
             return (
               <li
