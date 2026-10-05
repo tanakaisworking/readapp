@@ -216,6 +216,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
             左の「オートメーション」で「{AUTOMATION}」のスイッチをオンにします。最後にテスト通知を送り、読み上げられたら完了です。
           </p>
           <MockToggle />
+          <p className="mt-2 text-xs">初回は右上に「readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
@@ -230,7 +231,18 @@ export function AutomationSetup({ onDoneChange }: Props) {
             <Button
               size="sm"
               onClick={async () => {
-                if (await run("send_test_notification", "テスト通知を送れませんでした。")) setTestSent(true);
+                try {
+                  await invoke("send_test_notification");
+                  setError(null);
+                  setTestSent(true);
+                } catch (e) {
+                  setTestSent(false);
+                  setError(
+                    e === "denied"
+                      ? "readappの通知がオフです。システム設定の「通知」で readapp を許可してから、もう一度送ってください。"
+                      : "テスト通知を送れませんでした。もう一度お試しください。",
+                  );
+                }
               }}
             >
               <Bell />
@@ -239,7 +251,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
           </div>
           {testSent && (
             <p className="mt-2 text-xs" role="status">
-              送りました。初回は右上に「readapp」の通知の許可が出るので「許可」を押してください。続けてテスト通知が届きます。読み上げられない時は、スイッチがオンかを確かめてください。
+              送りました。読み上げられない時は、ショートカットでスイッチがオンかを確かめてください。
               <button
                 type="button"
                 className="ml-1 underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/50"

@@ -43,15 +43,34 @@ struct SpeakIntent: AppIntent {
     }
 }
 
+/// readappが前面にいる時もテスト通知をバナー表示する (既定では前面アプリの通知は出ない)。
+private final class ForegroundPresenter: NSObject, UNUserNotificationCenterDelegate {
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+}
+
+private let presenter = ForegroundPresenter()
+
 /// 設定確認用のテスト通知を出す。同梱のひな形は通知元に readapp 自身を含むので、
 /// オートメーションがオンなら「readappで読み上げる」まで一巡する。
-/// 結果は待たずに返す (許可ダイアログは初回のみ)。
+/// 戻り値: 0=送った / 1=通知が許可されていない / 2=送れなかった。
+/// 初回は許可の確認が出て、答えるまで待つ (呼び出し元はメインスレッド以外から呼ぶこと)。
 @_cdecl("readapp_post_test_notification")
-public func readapp_post_test_notification() {
+public func readapp_post_test_notification() -> Int32 {
     let center = UNUserNotificationCenter.current()
+    center.delegate = presenter
+    let done = DispatchSemaphore(value: 0)
+    var result: Int32 = 2
     center.requestAuthorization(options: [.alert, .sound]) { granted, error in
         guard granted else {
             log.notice("test notification not granted: \(String(describing: error), privacy: .public)")
+            result = 1
+            done.signal()
             return
         }
         let content = UNMutableNotificationContent()
@@ -60,6 +79,13 @@ public func readapp_post_test_notification() {
         let req = UNNotificationRequest(identifier: "readapp-test-\(UUID().uuidString)", content: content, trigger: nil)
         center.add(req) { err in
             if let err { log.notice("test notification failed: \(String(describing: err), privacy: .public)") }
+            result = err == nil ? 0 : 2
+            done.signal()
         }
     }
+    // 許可の確認に答えてもらう時間を見込む
+    if done.wait(timeout: .now() + 120) == .timedOut {
+        return 2
+    }
+    return result
 }

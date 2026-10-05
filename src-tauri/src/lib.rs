@@ -706,16 +706,21 @@ fn open_url(_url: &str) -> Result<(), String> {
 
 /// 設定確認用のテスト通知を出す (intents/Intents.swift)。
 /// ひな形の通知元に readapp 自身が入っているので、オートメーションがオンなら読み上げまで一巡する。
-#[tauri::command]
+/// 初回は許可の確認に答えるまで待つので、async指定でメインスレッド (画面) の外で動かす。
+/// 失敗時のErrは "denied" (通知が許可されていない) か "failed"。
+#[tauri::command(async)]
 fn send_test_notification() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         extern "C" {
-            fn readapp_post_test_notification();
+            fn readapp_post_test_notification() -> i32;
         }
-        // SAFETY: 引数なし。Swift側は非同期に処理してすぐ返る。
-        unsafe { readapp_post_test_notification() };
-        Ok(())
+        // SAFETY: 引数なし。メインスレッド外から呼ぶ (Swift側が完了を待つため)。
+        match unsafe { readapp_post_test_notification() } {
+            0 => Ok(()),
+            1 => Err("denied".to_string()),
+            _ => Err("failed".to_string()),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
