@@ -39,8 +39,9 @@ pub struct AppSettings {
     app_handle: Mutex<Option<tauri::AppHandle>>,
     /// 最近読んだ通知 (重複防止用。実行時のみ)。
     recent_spoken: Mutex<Vec<RecentSpoken>>,
-    /// 通知元ごとの最終受信時刻 (UNIX秒。設定の確認表示用。実行時のみ)。
-    received_at: Mutex<HashMap<String, u64>>,
+    /// 通知元ごとの (最終受信時刻 UNIX秒, 受信回数)。設定の確認表示用。実行時のみ。
+    /// 回数は同じ秒に複数届いても今回の受信を見分けるため。
+    received_at: Mutex<HashMap<String, (u64, u64)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -523,6 +524,8 @@ struct ObservedApp {
     name: String,
     /// 最終受信時刻 (UNIX秒)。この起動中に受信していなければ None
     at: Option<u64>,
+    /// この起動中の受信回数
+    count: u64,
 }
 
 /// 見かけた通知元の一覧 (追加候補・設定の確認表示用)。表示名と最終受信時刻付き。
@@ -532,10 +535,14 @@ fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<ObservedApp> {
     state
         .observed_apps()
         .into_iter()
-        .map(|id| ObservedApp {
-            name: app_label(&state, &id).unwrap_or_else(|| id.clone()),
-            at: received.get(&id).copied(),
-            id,
+        .map(|id| {
+            let (at, count) = received.get(&id).map(|(a, c)| (Some(*a), *c)).unwrap_or((None, 0));
+            ObservedApp {
+                name: app_label(&state, &id).unwrap_or_else(|| id.clone()),
+                at,
+                count,
+                id,
+            }
         })
         .collect()
 }
@@ -1074,7 +1081,8 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
         });
     }
     if let Ok(mut m) = settings.received_at.lock() {
-        m.insert(app_id.to_string(), at);
+        let entry = m.entry(app_id.to_string()).or_insert((at, 0));
+        *entry = (at, entry.1 + 1);
     }
 }
 

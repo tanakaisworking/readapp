@@ -332,11 +332,13 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
         >
           <p className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
             <Check className="h-4 w-4 text-emerald-500" strokeWidth={3} />
-            準備ができました
+            {practice && !received ? "設定を入れました" : "準備ができました"}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {practice
-              ? "readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
+              ? received
+                ? "readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
+                : "読み上げはまだ確認できていません。ホームの「試しに喋る」で、あとから確かめられます。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順で追加できます。"
               : received
                 ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
                 : "選んだアプリに通知が来ると読み上げます。"}

@@ -45,9 +45,11 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
   const [systemVoices, setSystemVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
   const [premiumVoice, setPremiumVoice] = useState<string | null>(null);
   const onCount = KNOWN_APPS.filter((a) => isOn(state, a.id)).length;
-  const extraIds = Object.keys(state.enabled).filter((id) => !KNOWN_APPS.some((a) => a.id === id));
+  // readapp自身 (試しに喋る・設定確認の通知) は常に読むので、ON/OFFの対象として出さない
+  const SELF = "readapp";
+  const extraIds = Object.keys(state.enabled).filter((id) => id !== SELF && !KNOWN_APPS.some((a) => a.id === id));
   const newcomers = observed.filter(
-    (o) => !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
+    (o) => o.id !== SELF && !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
   );
   const totalOn = onCount + extraIds.filter((id) => isOn(state, id)).length;
   // MAS版は読み上げるアプリをショートカット側 (通知オートメーションのアプリ選択) で決める
@@ -262,7 +264,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
                   </button>
                 ))}
               </div>
-              <TrySpeak edition={edition} onDirect={(text) => void api.speak("preview", "", text)} />
+              <TrySpeak platform={platform} edition={edition} onDirect={(text) => void api.speak("preview", "", text)} />
             </>
           )}
         </div>
