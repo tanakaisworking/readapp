@@ -48,8 +48,12 @@ export function AutomationSetup({ onDoneChange }: Props) {
   const [received, setReceived] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const startedAt = useRef(Math.floor(Date.now() / 1000));
+  const stepRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const doneRef = useRef<HTMLDivElement | null>(null);
+  const moved = useRef(false);
 
   const setStage = useCallback((s: Stage) => {
+    moved.current = true;
     setStageState((cur) => {
       const next = (Math.max(cur, s) as Stage);
       saveStage(next);
@@ -57,8 +61,41 @@ export function AutomationSetup({ onDoneChange }: Props) {
     });
   }, []);
 
-  const done = stage === 3 || received;
+  /** 最初からやり直す (ショートカット側で消された時など) */
+  const restart = useCallback(() => {
+    moved.current = true;
+    saveStage(0);
+    startedAt.current = Math.floor(Date.now() / 1000);
+    setReceived(false);
+    setWaitingAdd(false);
+    setStageState(0);
+  }, []);
+
+  const done = stage === 3;
   useEffect(() => onDoneChange?.(done), [done, onDoneChange]);
+
+  // 最初の通知が届いたら、途中でも完了として保存する
+  useEffect(() => {
+    if (received) setStage(3);
+  }, [received, setStage]);
+
+  // 操作で段階が進んだら、次にやることへフォーカスを移す (キーボード・読み上げ利用者が迷わないように)
+  useEffect(() => {
+    if (!moved.current) return;
+    moved.current = false;
+    (stage === 3 ? doneRef.current : stepRefs.current[stage])?.focus();
+  }, [stage]);
+
+  // 途中まで進んだ後にひな形が消されていたら (ショートカットで削除など)、最初から案内し直す
+  useEffect(() => {
+    if (stage === 0) return;
+    invoke<boolean>("notify_automation_installed")
+      .then((ok) => {
+        if (!ok) restart();
+      })
+      .catch(() => {});
+    // 起動時に一度だけ確かめる
+  }, []);
 
   // ひな形が追加されたら自動で次へ。ショートカットから戻った時 (フォーカス) と、待機中は2秒ごとに確かめる。
   useEffect(() => {
@@ -201,9 +238,13 @@ export function AutomationSetup({ onDoneChange }: Props) {
           return (
             <li
               key={step.title}
+              ref={(el) => {
+                stepRefs.current[i] = el;
+              }}
+              tabIndex={-1}
               aria-current={current ? "step" : undefined}
               className={cn(
-                "rounded-lg px-3.5 py-3 transition-colors duration-200",
+                "rounded-lg px-3.5 py-3 outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-primary/50",
                 current ? "bg-card shadow-[0_1px_2px_rgba(41,39,45,0.08)] ring-1 ring-primary/30" : "bg-surface-muted/60",
               )}
             >
@@ -231,7 +272,12 @@ export function AutomationSetup({ onDoneChange }: Props) {
       </ol>
 
       {done && (
-        <div className="mt-3 rounded-lg bg-primary-soft px-3.5 py-3" role="status">
+        <div
+          ref={doneRef}
+          tabIndex={-1}
+          className="mt-3 rounded-lg bg-primary-soft px-3.5 py-3 outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          role="status"
+        >
           <p className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
             <Check className="h-4 w-4 text-emerald-500" strokeWidth={3} />
             準備ができました
@@ -241,6 +287,21 @@ export function AutomationSetup({ onDoneChange }: Props) {
               ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
               : "選んだアプリに通知が来ると読み上げます。"}
           </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void run("open_notify_automation", "開けませんでした。ショートカットで「" + AUTOMATION + "」を開いてください。")
+              }
+            >
+              <ExternalLink />
+              アプリを変える
+            </Button>
+            <Button size="sm" variant="ghost" onClick={restart}>
+              最初から設定する
+            </Button>
+          </div>
         </div>
       )}
 
