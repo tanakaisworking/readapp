@@ -657,11 +657,8 @@ fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> O
     if raw.is_empty() {
         return None;
     }
-    let input = match (settings.mode(), app_label(settings, app_id)) {
-        (Mode::Persona, Some(name)) => format!("{name}の通知。{raw}"),
-        _ => raw,
-    };
-    let text = transform::transform_text(settings, &input);
+    let label = app_label(settings, app_id);
+    let text = transform::transform_text(settings, &raw, label.as_deref());
     speech::system::speak(&text, &settings.voice());
     Some(text)
 }
@@ -714,7 +711,8 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
 
 /// 「試しに喋る」: 実通知なしで変換→発声まで通す (M1)。
 /// 試し聞きなのでON/OFFに関わらず喋る。
-#[tauri::command]
+/// 変換に数秒かかるのでasync指定でメインスレッド (画面) を塞がない。
+#[tauri::command(async)]
 fn test_speak(
     state: State<'_, AppSettings>,
     app_id: String,
@@ -817,11 +815,17 @@ pub fn run() {
             }
             // 起動中URL (macOSは起動中イベントで届く)
             let moved = handle.clone();
+            // 変換待ちでメインスレッド (画面) を塞がないよう別スレッドで流す。
+            // ponytail: イベントごとにスレッドを立てる。同時に届くと変換の完了順で読む。
             handle.deep_link().on_open_url(move |event| {
-                let settings = moved.state::<AppSettings>();
-                for url in event.urls() {
-                    handle_notify_url(&settings, &url);
-                }
+                let h = moved.clone();
+                let urls = event.urls();
+                std::thread::spawn(move || {
+                    let settings = h.state::<AppSettings>();
+                    for url in &urls {
+                        handle_notify_url(&settings, url);
+                    }
+                });
             });
             // macOS直接監視を開始 (dmg版。許可済みの場合のみ)。
             #[cfg(target_os = "macos")]
@@ -918,7 +922,7 @@ mod tests {
         let settings = AppSettings::default();
         *settings.mode.lock().unwrap() = "raw".to_string();
         assert_eq!(
-            transform::transform_text(&settings, "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。", None),
             "作業が完了しました。"
         );
     }
@@ -928,7 +932,7 @@ mod tests {
         let settings = AppSettings::default();
         assert!(settings.helper_path().is_none());
         assert_eq!(
-            transform::transform_text(&settings, "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。", None),
             "作業が完了しました。"
         );
     }
@@ -938,8 +942,18 @@ mod tests {
         let settings = AppSettings::default();
         settings.set_helper_path(Some(std::path::PathBuf::from("/nonexistent/fm-helper")));
         assert_eq!(
-            transform::transform_text(&settings, "作業が完了しました。"),
+            transform::transform_text(&settings, "作業が完了しました。", None),
             "作業が完了しました。"
+        );
+    }
+
+    #[test]
+    fn fallback_does_not_speak_source_line() {
+        let settings = AppSettings::default();
+        settings.set_helper_path(Some(std::path::PathBuf::from("/nonexistent/fm-helper")));
+        assert_eq!(
+            transform::transform_text(&settings, "資料できました", Some("Slack")),
+            "資料できました"
         );
     }
 

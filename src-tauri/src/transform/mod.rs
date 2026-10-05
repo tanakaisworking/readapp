@@ -69,8 +69,17 @@ pub fn personas() -> Vec<Persona> {
     ]
 }
 
-/// 入力は「<アプリ名>の通知。<本文>」(speak_now参照)。アプリ名を落とさせない。
-const KEEP_APP_NAME: &str = "冒頭の「〇〇の通知」の〇〇はアプリ名なので、言い換え文に必ず含める。";
+/// 全キャラ共通の決まり。アプリ名は入力の「通知元:」行で渡す (persona_input) ので、
+/// 無い時に穴埋め語を作らせないよう条件付きで頼む。時刻は崩されやすい (15:00→15時〇分) ので写させる。
+const COMMON_RULES: &str = "通知元が書かれていれば、そのアプリ名を言い換え文に含める。数字・時刻・日付・固有名詞は元の表記のまま書き写す。";
+
+/// モデルへの入力。アプリ名が分かる時だけ「通知元:」行を付ける。
+pub fn persona_input(raw_text: &str, app_name: Option<&str>) -> String {
+    match app_name {
+        Some(name) => format!("通知元: {name}\n{raw_text}"),
+        None => raw_text.to_string(),
+    }
+}
 
 pub fn persona_instruction(id: &str) -> String {
     let base = personas()
@@ -78,12 +87,13 @@ pub fn persona_instruction(id: &str) -> String {
         .find(|p| p.id == id)
         .map(|p| p.instruction)
         .unwrap_or_else(|| "渡された通知内容を一文の話し言葉で言い換える。出力は言い換え文のみ。".into());
-    format!("{base}{KEEP_APP_NAME}")
+    format!("{base}{COMMON_RULES}")
 }
 
 /// 変換の振り分け。ローカルAIが使えない場合は素文にフォールバックする
 /// (読み上げ自体は止めない)。
-pub fn transform_text(settings: &AppSettings, raw_text: &str) -> String {
+/// app_nameはキャラ変換の入力にだけ使う。素文・フォールバックでは読まない。
+pub fn transform_text(settings: &AppSettings, raw_text: &str, app_name: Option<&str>) -> String {
     if settings.mode() == Mode::Raw {
         return raw::transform(raw_text);
     }
@@ -92,12 +102,15 @@ pub fn transform_text(settings: &AppSettings, raw_text: &str) -> String {
     {
         if let Some(helper) = settings.helper_path() {
             let instruction = persona_instruction(&persona_id);
-            match apple_foundation_model::transform(raw_text, &instruction, &helper) {
+            let input = persona_input(raw_text, app_name);
+            match apple_foundation_model::transform(&input, &instruction, &helper) {
                 Ok(t) if !t.trim().is_empty() => return t,
                 _ => {}
             }
         }
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app_name;
     #[cfg(target_os = "windows")]
     {
         match windows_local_ai::transform(raw_text, &persona_id) {
@@ -106,4 +119,22 @@ pub fn transform_text(settings: &AppSettings, raw_text: &str) -> String {
         }
     }
     raw::transform(raw_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persona_input_adds_source_only_when_known() {
+        assert_eq!(persona_input("田中。資料できました", Some("Slack")), "通知元: Slack\n田中。資料できました");
+        assert_eq!(persona_input("作業が完了しました。", None), "作業が完了しました。");
+    }
+
+    #[test]
+    fn instruction_has_no_placeholder() {
+        for p in personas() {
+            assert!(!persona_instruction(&p.id).contains('〇'));
+        }
+    }
 }
