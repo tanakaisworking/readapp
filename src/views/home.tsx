@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { FolderOpen, Play, Plus, Sparkles } from "lucide-react";
+import { FolderOpen, Plus, Sparkles } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { PersonaPicker } from "@/components/persona-picker";
 import { PremiumSheet } from "@/components/premium-sheet";
 import { MasAppList } from "@/components/mas-app-list";
+import { TrySpeak } from "@/components/try-speak";
 import {
   KNOWN_APPS,
   VOICES,
@@ -261,12 +262,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
                   </button>
                 ))}
               </div>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={onPreview} disabled={speaking}>
-                  <Play className="h-3.5 w-3.5" />
-                  試しに喋る
-                </Button>
-              </div>
+              <TrySpeak edition={edition} onDirect={(text) => void api.speak("preview", "", text)} />
             </>
           )}
         </div>

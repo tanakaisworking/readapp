@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { PersonaPicker } from "@/components/persona-picker";
+import { AutomationSetup } from "@/components/automation-setup";
 import type { Persona } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,7 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
   const [persona, setPersona] = useState("mio");
   const [granted, setGranted] = useState(false);
   const [axOn, setAxOn] = useState<boolean | null>(null);
+  const [setupDone, setSetupDone] = useState(false);
   const last = 3;
 
   useEffect(() => {
@@ -155,14 +157,23 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
               ) : (
                 <>
                   <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-                    macOSのショートカットで、アプリの通知を受け取ります。
+                    macOSのショートカットで、アプリの通知を受け取ります。まずは練習に、readapp自身の通知を読み上げる設定を入れてみましょう。
                   </p>
-                  <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-                    読み上げたいアプリは、このあとホームの「読み上げるアプリ」で選べます。よく使うアプリは「追加」を押すだけです。
-                  </p>
+                  <div className="mt-4">
+                    <AutomationSetup practice onDoneChange={setSetupDone} />
+                  </div>
+                  {!setupDone && (
+                    <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                      ほかのアプリも、あとでホームの「読み上げるアプリ」から同じ手順で追加できます。
+                    </p>
+                  )}
                   <div className="flex-1" />
-                  <Button className="mt-4 w-full" onClick={() => setStep(2)}>
-                    つぎへ
+                  <Button
+                    className="mt-4 w-full"
+                    variant={setupDone ? "default" : "ghost"}
+                    onClick={() => setStep(2)}
+                  >
+                    {setupDone ? "つぎへ" : "あとで設定する"}
                   </Button>
                 </>
               )}

@@ -64,12 +64,13 @@ private final class ForegroundPresenter: NSObject, UNUserNotificationCenterDeleg
 
 private let presenter = ForegroundPresenter()
 
-/// 設定確認用のテスト通知を出す。同梱のひな形は通知元に readapp 自身を含むので、
+/// 試し用の通知を出す (本文は呼び出し元が渡す)。同梱の汎用ひな形は通知元に readapp 自身を含むので、
 /// オートメーションがオンなら「readappで読み上げる」まで一巡する。
 /// 戻り値: 0=送った / 1=通知が許可されていない / 2=送れなかった。
 /// 初回は許可の確認が出て、答えるまで待つ (呼び出し元はメインスレッド以外から呼ぶこと)。
 @_cdecl("readapp_post_test_notification")
-public func readapp_post_test_notification() -> Int32 {
+public func readapp_post_test_notification(_ body: UnsafePointer<CChar>) -> Int32 {
+    let text = String(cString: body)
     let center = UNUserNotificationCenter.current()
     center.delegate = presenter
     let done = DispatchSemaphore(value: 0)
@@ -81,9 +82,9 @@ public func readapp_post_test_notification() -> Int32 {
             done.signal()
             return
         }
+        // 本文だけにする (タイトルを付けると「readapp」まで読み上げられる)
         let content = UNMutableNotificationContent()
-        content.title = "readapp"
-        content.body = "テスト通知です。読み上げの設定ができました。"
+        content.body = text
         let req = UNNotificationRequest(identifier: "readapp-test-\(UUID().uuidString)", content: content, trigger: nil)
         center.add(req) { err in
             if let err { log.notice("test notification failed: \(String(describing: err), privacy: .public)") }

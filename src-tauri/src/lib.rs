@@ -312,7 +312,8 @@ fn catalog() -> &'static [CatalogApp] {
 /// - 直接届いた通知: カタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)
 /// - ショートカット経由: ON (ユーザーがショートカット側で対象アプリに選んだもの。MAS版はアプリ別ON/OFFを出さない)
 fn should_speak(settings: &AppSettings, app_id: &str, route: Route) -> bool {
-    if settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
+    // readapp自身の通知は「試しに喋る」と設定確認用なので、設定に関わらず読む
+    if app_id == SELF_APP_ID || settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
         return true;
     }
     let explicit = settings
@@ -711,19 +712,28 @@ fn open_url(_url: &str) -> Result<(), String> {
     Err("macOS only".to_string())
 }
 
-/// 設定確認用のテスト通知を出す (intents/Intents.swift)。
-/// ひな形の通知元に readapp 自身が入っているので、オートメーションがオンなら読み上げまで一巡する。
+/// 試し用の通知の既定の本文 (設定確認用)。
+const TEST_NOTIFICATION_TEXT: &str = "テスト通知です。読み上げの設定ができました。";
+
+/// 試し用の通知を出す (intents/Intents.swift)。本文を省くと設定確認用の文。
+/// 汎用ひな形の通知元に readapp 自身が入っているので、オートメーションがオンなら読み上げまで一巡する
+/// (dmg版は直接監視でも拾う。同じ通知は重複判定で1回になる)。
 /// 初回は許可の確認に答えるまで待つので、async指定でメインスレッド (画面) の外で動かす。
 /// 失敗時のErrは "denied" (通知が許可されていない) か "failed"。
 #[tauri::command(async)]
-fn send_test_notification() -> Result<(), String> {
+fn send_test_notification(text: Option<String>) -> Result<(), String> {
+    let text = text
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| TEST_NOTIFICATION_TEXT.to_string());
     #[cfg(target_os = "macos")]
     {
         extern "C" {
-            fn readapp_post_test_notification() -> i32;
+            fn readapp_post_test_notification(body: *const std::os::raw::c_char) -> i32;
         }
-        // SAFETY: 引数なし。メインスレッド外から呼ぶ (Swift側が完了を待つため)。
-        match unsafe { readapp_post_test_notification() } {
+        let body = std::ffi::CString::new(text).map_err(|_| "invalid text".to_string())?;
+        // SAFETY: NUL終端の文字列を渡し、呼び出し中は有効。メインスレッド外から呼ぶ (Swift側が完了を待つため)。
+        match unsafe { readapp_post_test_notification(body.as_ptr()) } {
             0 => Ok(()),
             1 => Err("denied".to_string()),
             _ => Err("failed".to_string()),
@@ -731,6 +741,7 @@ fn send_test_notification() -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = text;
         Err("macOS only".to_string())
     }
 }
@@ -974,6 +985,9 @@ fn clean_for_speech(text: &str) -> String {
 
 /// ショートカットの部品から呼ばれた時に使う、起動後のハンドル。
 static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// readapp自身の通知元ID (通知のアプリ名「readapp」から app_id_for で作られる)。
+const SELF_APP_ID: &str = "readapp";
 
 /// アプリ名なしで部品が呼ばれた時の通知元ID (ON/OFFに関わらず読む)。
 const INTENT_APP_ID: &str = "shortcut";
@@ -1254,6 +1268,14 @@ mod tests {
             }
             assert_eq!(app_automation_name("chatgpt", 1), "readapp通知-chatgpt-2");
         }
+    }
+
+    #[test]
+    fn readapp_self_notification_always_speaks() {
+        let settings = AppSettings::default();
+        assert_eq!(notifications::app_id_for("readapp"), SELF_APP_ID);
+        settings.enabled.lock().unwrap().insert(SELF_APP_ID.to_string(), false);
+        assert!(should_speak(&settings, SELF_APP_ID, Route::Direct));
     }
 
     #[test]

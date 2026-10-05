@@ -41,9 +41,12 @@ function saveStage(s: Stage) {
 interface Props {
   /** 完了 (最初の通知の受信を含む) が変わったら呼ばれる */
   onDoneChange?: (done: boolean) => void;
+  /** オンボーディングの練習: readapp自身の通知だけを読む設定を入れる (アプリ選びは省く)。
+   *  追加→オンの手順を一度体験すると、ホームで有名アプリを同じ手順で足せる */
+  practice?: boolean;
 }
 
-export function AutomationSetup({ onDoneChange }: Props) {
+export function AutomationSetup({ onDoneChange, practice = false }: Props) {
   const [stage, setStageState] = useState<Stage>(loadStage);
   const [waitingAdd, setWaitingAdd] = useState(false);
   const [testSent, setTestSent] = useState(false);
@@ -109,7 +112,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
         .then((ok) => {
           if (alive && ok) {
             setWaitingAdd(false);
-            setStage(1);
+            setStage(practice ? 2 : 1);
           }
         })
         .catch(() => {});
@@ -218,7 +221,10 @@ export function AutomationSetup({ onDoneChange }: Props) {
       body: (
         <>
           <p>
-            左の「オートメーション」で「{AUTOMATION}」のスイッチをオンにします。最後にテスト通知を送り、読み上げられたら完了です。
+            ショートカットの「オートメーション」で「{AUTOMATION}」のスイッチをオンにします。
+            {practice
+              ? "テスト通知を送り、readappの通知が読み上げられたら完了です。"
+              : "最後にテスト通知を送り、読み上げられたら完了です。"}
           </p>
           <MockToggle />
           <p className="mt-2 text-xs">初回は右上に「readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
@@ -254,7 +260,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
               テスト通知
             </Button>
           </div>
-          {testSent && (
+          {testSent && !done && (
             <p className="mt-2 text-xs" role="status">
               送りました。読み上げられない時は、ショートカットでスイッチがオンかを確かめてください。
               <button
@@ -274,7 +280,8 @@ export function AutomationSetup({ onDoneChange }: Props) {
   return (
     <div>
       <ol className="space-y-2" aria-label="通知を受け取る設定">
-        {steps.map((step, i) => {
+        {(practice ? [0, 2] : [0, 1, 2]).map((i, order) => {
+          const step = steps[i];
           const finished = done || i < stage;
           const current = !done && i === stage;
           return (
@@ -298,7 +305,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
                   )}
                   aria-hidden="true"
                 >
-                  {finished ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                  {finished ? <Check className="h-3 w-3" strokeWidth={3} /> : order + 1}
                 </span>
                 <span className="text-[13px] font-medium">{step.title}</span>
                 {finished && <span className="ml-auto text-xs text-muted-foreground">{step.doneLabel}</span>}
@@ -328,10 +335,13 @@ export function AutomationSetup({ onDoneChange }: Props) {
             準備ができました
           </p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {received
-              ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
-              : "選んだアプリに通知が来ると読み上げます。"}
+            {practice
+              ? "readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
+              : received
+                ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
+                : "選んだアプリに通知が来ると読み上げます。"}
           </p>
+          {!practice && (
           <div className="mt-2 flex flex-wrap gap-2">
             <Button
               size="sm"
@@ -347,6 +357,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
               最初から設定する
             </Button>
           </div>
+          )}
         </div>
       )}
 
