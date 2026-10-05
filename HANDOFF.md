@@ -34,6 +34,9 @@ Windows型検査は別途 `/tmp/wcheck` 手順（このMacには残っていな�
   - バナーは NotificationCenter の AXSystemDialog 窓内 `AXNotificationCenterBanner/Alert(Stack)` 要素。0.7秒間隔で走査
   - 起動時に出ていた通知と、一度に3件以上現れた分 (通知センター履歴とみなす) は読まない
 
+- 画面と挙動の一致: 未設定はカタログ (catalog.json) のアプリだけON、見つけたアプリは追加するまで読まない。
+  設定キーは表示名から `notifications::app_id_for` で作る (NFC正規化済み、macOS/Windows共通)
+
 ## 未解決 (Issue)
 
 - #2 Windows実機検証
