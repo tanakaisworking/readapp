@@ -142,11 +142,13 @@ impl Banner {
 /// AXDescriptionの先頭からアプリ名を取り出す。"Slack、田中, 本文" → "Slack"。
 /// 英語環境の ", " 区切りにもフォールバックする。
 pub fn app_name_from_description(desc: &str) -> String {
-    let head = match desc.find('、') {
-        Some(i) => &desc[..i],
-        None => desc.split(", ").next().unwrap_or(""),
-    };
-    head.trim().to_string()
+    // 本文側にも区切りが出うるので、最初に現れた区切りで切る
+    let end = [desc.find('、'), desc.find(", ")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(desc.len());
+    desc[..end].trim().to_string()
 }
 
 /// 通知要素の中身 (説明文と識別子付きテキスト) からBannerを組み立てる。
@@ -344,27 +346,41 @@ fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
     tx
 }
 
+/// 1回の走査で新規がこれより多ければ、バナーではなく通知センターの履歴表示とみなす。
+/// ponytail: 件数だけの判定。履歴を開いた時に2件以下の未読があれば読んでしまう。
+const BURST_LIMIT: usize = 2;
+/// NotificationCenterの再起動に備えてpidを引き直す間隔 (走査回数)。
+const PID_REFRESH_TICKS: u32 = 40;
+
+/// 走査結果のうち読み上げるものを返す。全件を既読化する。
+/// primed=false (起動直後) と、まとめて現れた分は読まない。
+fn fresh_to_speak(seen: &mut Seen, banners: Vec<Banner>, primed: bool) -> Vec<Banner> {
+    let fresh: Vec<Banner> = banners.into_iter().filter(|b| seen.mark(b.key())).collect();
+    if !primed || fresh.len() > BURST_LIMIT {
+        if primed {
+            eprintln!("[readapp] ax: skipped {} notifications shown at once", fresh.len());
+        }
+        return Vec::new();
+    }
+    fresh
+}
+
 fn watch_loop(tx: mpsc::Sender<Banner>) {
     let mut seen = Seen::new();
     let mut pid: Option<c_int> = None;
     // 起動時に出ていたもの (置きっぱなしのアラート等) は読まない
     let mut primed = false;
+    let mut ticks: u32 = 0;
     loop {
-        // NotificationCenterは再起動することがあるので、見失ったら探し直す
-        if pid.is_none() {
+        if pid.is_none() || ticks % PID_REFRESH_TICKS == 0 {
             pid = notification_center_pid();
         }
+        ticks = ticks.wrapping_add(1);
         if let Some(p) = pid {
-            let banners = visible_banners(p);
-            if banners.is_empty() && notification_center_pid() != Some(p) {
-                pid = None;
-            }
-            for b in banners {
-                if seen.mark(b.key()) && primed {
-                    eprintln!("[readapp] ax banner: {:?}", b);
-                    if tx.send(b).is_err() {
-                        return;
-                    }
+            for b in fresh_to_speak(&mut seen, visible_banners(p), primed) {
+                eprintln!("[readapp] ax banner: {:?}", b);
+                if tx.send(b).is_err() {
+                    return;
                 }
             }
             primed = true;
@@ -392,6 +408,13 @@ mod tests {
     #[test]
     fn app_name_from_english_description() {
         assert_eq!(app_name_from_description("Slack, Tanaka, hello"), "Slack");
+    }
+
+    #[test]
+    fn app_name_uses_first_separator_when_mixed() {
+        assert_eq!(app_name_from_description("Slack, 田中, 明日、確認してください"), "Slack");
+        assert_eq!(app_name_from_description("Slack、田中, 明日"), "Slack");
+        assert_eq!(app_name_from_description("Slack"), "Slack");
     }
 
     #[test]
@@ -447,6 +470,32 @@ mod tests {
         assert!(is_notification_subrole("AXNotificationCenterAlert"));
         assert!(is_notification_subrole("AXNotificationCenterAlertStack"));
         assert!(!is_notification_subrole("AXHostingView"));
+    }
+
+    #[test]
+    fn nothing_is_spoken_before_priming() {
+        let mut seen = Seen::new();
+        let b = banner_from_parts("U", "Slack、x", &[t("title", "1")]).unwrap();
+        assert!(fresh_to_speak(&mut seen, vec![b.clone()], false).is_empty());
+        // 起動時に出ていたものは、その後も読まない
+        assert!(fresh_to_speak(&mut seen, vec![b], true).is_empty());
+    }
+
+    #[test]
+    fn single_new_banner_is_spoken_once() {
+        let mut seen = Seen::new();
+        let b = banner_from_parts("U", "Slack、x", &[t("title", "1")]).unwrap();
+        assert_eq!(fresh_to_speak(&mut seen, vec![b.clone()], true).len(), 1);
+        assert!(fresh_to_speak(&mut seen, vec![b], true).is_empty());
+    }
+
+    #[test]
+    fn burst_of_history_is_not_spoken() {
+        let mut seen = Seen::new();
+        let many: Vec<Banner> = (0..=BURST_LIMIT)
+            .map(|i| banner_from_parts(&format!("U{i}"), "Slack、x", &[t("title", "1")]).unwrap())
+            .collect();
+        assert!(fresh_to_speak(&mut seen, many, true).is_empty());
     }
 
     #[test]
