@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { PersonaPicker } from "@/components/persona-picker";
-import { ShortcutSetup } from "@/components/shortcut-setup";
+import { AutomationSetup } from "@/components/automation-setup";
 import type { Persona } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +25,7 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
   const [persona, setPersona] = useState("mio");
   const [granted, setGranted] = useState(false);
   const [axOn, setAxOn] = useState<boolean | null>(null);
+  const [setupDone, setSetupDone] = useState(false);
   const last = 3;
 
   useEffect(() => {
@@ -156,14 +157,18 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
               ) : (
                 <>
                   <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-                    macOSのショートカットで通知を受け取ります。設定は一度だけです。
+                    ショートカットに読み上げの設定を入れます。3ステップ、1分ほどです。
                   </p>
                   <div className="mt-4">
-                    <ShortcutSetup />
+                    <AutomationSetup onDoneChange={setSetupDone} />
                   </div>
                   <div className="flex-1" />
-                  <Button className="mt-4 w-full" variant="ghost" onClick={() => setStep(2)}>
-                    つぎへ
+                  <Button
+                    className="mt-4 w-full"
+                    variant={setupDone ? "default" : "ghost"}
+                    onClick={() => setStep(2)}
+                  >
+                    {setupDone ? "つぎへ" : "あとで設定する"}
                   </Button>
                 </>
               )}

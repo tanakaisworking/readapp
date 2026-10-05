@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PersonaPicker } from "@/components/persona-picker";
 import { PremiumSheet } from "@/components/premium-sheet";
-import { ShortcutSetup } from "@/components/shortcut-setup";
+import { AutomationSetup } from "@/components/automation-setup";
 import {
   KNOWN_APPS,
   VOICES,
@@ -371,7 +371,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
                 設定のしかた
               </summary>
               <div className="mt-3">
-                <ShortcutSetup />
+                <AutomationSetup />
               </div>
             </details>
           </div>

@@ -1,0 +1,332 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Bell, Check, ExternalLink, Keyboard, Plus } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+// MAS版の通知の受け取り設定 (ショートカットの通知オートメーション)。
+// 1. 同梱のひな形を追加する   … 追加済みかは shortcuts list で自動判定
+// 2. 読み上げるアプリを選ぶ   … 編集画面をURLで直接開く。選んだかは判定できないので本人が進める
+// 3. オートメーションをオンにする … 同上 (読み込んだオートメーションは最初オフ)
+// 最初の通知が届いたら、途中でも全部できたことにする。
+// 画面の文言・見本は macOS 27 のショートカットで実際に操作して確認したもの (2026-10-06)。
+
+/** ショートカット側の名前 (src-tauri の AUTOMATION_NAME と同じ) */
+const AUTOMATION = "readapp通知";
+/** ショートカットの青 (見本の「押す場所」を本物と同じ色で示す) */
+const SHORTCUTS_BLUE = "#0a84ff";
+const STORE_KEY = "readapp.automationSetup";
+
+type Stage = 0 | 1 | 2 | 3; // 3 = 完了
+
+function loadStage(): Stage {
+  try {
+    const v = Number(localStorage.getItem(STORE_KEY));
+    return v >= 0 && v <= 3 ? (v as Stage) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveStage(s: Stage) {
+  try {
+    localStorage.setItem(STORE_KEY, String(s));
+  } catch {
+    /* 保存できなくても進行はできる */
+  }
+}
+
+interface Props {
+  /** 完了 (最初の通知の受信を含む) が変わったら呼ばれる */
+  onDoneChange?: (done: boolean) => void;
+}
+
+export function AutomationSetup({ onDoneChange }: Props) {
+  const [stage, setStageState] = useState<Stage>(loadStage);
+  const [waitingAdd, setWaitingAdd] = useState(false);
+  const [received, setReceived] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const startedAt = useRef(Math.floor(Date.now() / 1000));
+
+  const setStage = useCallback((s: Stage) => {
+    setStageState((cur) => {
+      const next = (Math.max(cur, s) as Stage);
+      saveStage(next);
+      return next;
+    });
+  }, []);
+
+  const done = stage === 3 || received;
+  useEffect(() => onDoneChange?.(done), [done, onDoneChange]);
+
+  // ひな形が追加されたら自動で次へ。ショートカットから戻った時 (フォーカス) と、待機中は2秒ごとに確かめる。
+  useEffect(() => {
+    if (stage > 0) return;
+    let alive = true;
+    const check = () =>
+      invoke<boolean>("notify_automation_installed")
+        .then((ok) => {
+          if (alive && ok) {
+            setWaitingAdd(false);
+            setStage(1);
+          }
+        })
+        .catch(() => {});
+    void check();
+    const id = waitingAdd ? setInterval(check, 2000) : null;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    getCurrentWindow()
+      .onFocusChanged((e) => e.payload && void check())
+      .then((f) => (disposed ? f() : (unlisten = f)))
+      .catch(() => {});
+    return () => {
+      alive = false;
+      disposed = true;
+      if (id) clearInterval(id);
+      unlisten?.();
+    };
+  }, [stage, waitingAdd, setStage]);
+
+  // 最初の通知が届いたら完了 (設定を始めた後の受信だけ数える)
+  useEffect(() => {
+    if (received) return;
+    const tick = () =>
+      invoke<{ at: number } | null>("get_last_received")
+        .then((last) => last && last.at >= startedAt.current && setReceived(true))
+        .catch(() => {});
+    void tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+  }, [received]);
+
+  const run = async (command: string, failure: string) => {
+    try {
+      await invoke(command);
+      setError(null);
+      return true;
+    } catch {
+      setError(failure);
+      return false;
+    }
+  };
+
+  const add = async () => {
+    if (await run("add_notify_automation", "設定ファイルを開けませんでした。アプリを入れ直してください。")) {
+      setWaitingAdd(true);
+    }
+  };
+
+  const steps = [
+    {
+      title: "設定を追加",
+      doneLabel: "追加しました",
+      body: (
+        <>
+          <p>ショートカットが開いたら「ショートカットを追加」を押します。</p>
+          <MockAdd />
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" onClick={() => void add()}>
+              <Plus />
+              追加する
+            </Button>
+            {waitingAdd && (
+              <span className="text-xs text-muted-foreground" role="status">
+                追加を待っています…
+              </span>
+            )}
+          </div>
+        </>
+      ),
+    },
+    {
+      title: "アプリを選ぶ",
+      doneLabel: "選びました",
+      body: (
+        <>
+          <p>
+            青い「アプリ」を押して、読み上げたいアプリを選びます。「＋」で増やせます。
+          </p>
+          <MockApps />
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                void run("open_notify_automation", "開けませんでした。ショートカットで「" + AUTOMATION + "」を開いてください。")
+              }
+            >
+              <ExternalLink />
+              開く
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setStage(2)}>
+              選んだ
+            </Button>
+          </div>
+        </>
+      ),
+    },
+    {
+      title: "オンにする",
+      doneLabel: "オンにしました",
+      body: (
+        <>
+          <p>左の「オートメーション」を開き、「{AUTOMATION}」のスイッチをオンにします。</p>
+          <MockToggle />
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                void run("open_shortcuts_app", "開けませんでした。Launchpadから「ショートカット」を開いてください。")
+              }
+            >
+              <ExternalLink />
+              開く
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setStage(3)}>
+              オンにした
+            </Button>
+          </div>
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <ol className="space-y-2" aria-label="通知を受け取る設定">
+        {steps.map((step, i) => {
+          const finished = done || i < stage;
+          const current = !done && i === stage;
+          return (
+            <li
+              key={step.title}
+              aria-current={current ? "step" : undefined}
+              className={cn(
+                "rounded-lg px-3.5 py-3 transition-colors duration-200",
+                current ? "bg-card shadow-[0_1px_2px_rgba(41,39,45,0.08)] ring-1 ring-primary/30" : "bg-surface-muted/60",
+              )}
+            >
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={cn(
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+                    finished ? "bg-emerald-500 text-white" : current ? "bg-primary text-white" : "bg-border text-muted-foreground",
+                  )}
+                  aria-hidden="true"
+                >
+                  {finished ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                </span>
+                <span className={cn("text-[13px] font-medium", !current && !finished && "text-muted-foreground")}>
+                  {step.title}
+                </span>
+                {finished && <span className="ml-auto text-xs text-muted-foreground">{step.doneLabel}</span>}
+              </div>
+              {current && (
+                <div className="mt-2 pl-[30px] text-[13px] leading-relaxed text-muted-foreground">{step.body}</div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+
+      {done && (
+        <div className="mt-3 rounded-lg bg-primary-soft px-3.5 py-3" role="status">
+          <p className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+            <Check className="h-4 w-4 text-emerald-500" strokeWidth={3} />
+            準備ができました
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {received
+              ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
+              : "選んだアプリに通知が来ると読み上げます。"}
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-2 text-xs text-muted-foreground" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---- 見本 (ショートカットの画面の一部を小さく再現し、押す場所を示す) ----
+
+function MockFrame({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-2.5 rounded-md bg-surface-muted p-2.5" role="img" aria-label={label}>
+      {children}
+    </div>
+  );
+}
+
+function Target({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      className="rounded-[7px] px-1.5 py-0.5 font-medium ring-2"
+      style={{ color: SHORTCUTS_BLUE, backgroundColor: `${SHORTCUTS_BLUE}1f`, ["--tw-ring-color" as string]: `${SHORTCUTS_BLUE}66` }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function MockAdd() {
+  return (
+    <MockFrame label="ショートカットの追加画面。「ショートカットを追加」ボタンを押す">
+      <div className="flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-[9px] bg-amber-400/90 text-white" aria-hidden="true">
+          <Keyboard className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-foreground">{AUTOMATION}</p>
+          <span
+            className="mt-1 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium text-white ring-2"
+            style={{ backgroundColor: SHORTCUTS_BLUE, ["--tw-ring-color" as string]: `${SHORTCUTS_BLUE}55` }}
+          >
+            ショートカットを追加
+          </span>
+        </div>
+      </div>
+    </MockFrame>
+  );
+}
+
+function MockApps() {
+  return (
+    <MockFrame label="通知オートメーションの設定。「アプリ」を押して読み上げたいアプリを選ぶ">
+      <p className="flex flex-wrap items-center gap-1 text-[11px] text-foreground">
+        <Bell className="h-3.5 w-3.5 text-rose-500" aria-hidden="true" />
+        <Target>アプリ</Target>
+        <span style={{ color: SHORTCUTS_BLUE }} aria-hidden="true">
+          ＋
+        </span>
+        からの通知を受け取ったとき
+      </p>
+    </MockFrame>
+  );
+}
+
+function MockToggle() {
+  return (
+    <MockFrame label="ショートカットのオートメーション一覧。readapp通知のスイッチをオンにする">
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="rounded-[6px] bg-card px-1.5 py-0.5 font-medium text-foreground">オートメーション</span>
+        <span className="text-muted-foreground" aria-hidden="true">
+          →
+        </span>
+        <span className="min-w-0 flex-1 truncate text-foreground">{AUTOMATION}</span>
+        <span
+          className="relative h-4 w-7 shrink-0 rounded-full ring-2"
+          style={{ backgroundColor: SHORTCUTS_BLUE, ["--tw-ring-color" as string]: `${SHORTCUTS_BLUE}55` }}
+          aria-hidden="true"
+        >
+          <span className="absolute right-0.5 top-0.5 h-3 w-3 rounded-full bg-white" />
+        </span>
+      </div>
+    </MockFrame>
+  );
+}

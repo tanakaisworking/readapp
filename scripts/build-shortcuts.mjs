@@ -56,7 +56,8 @@ for (const app of catalog.apps) {
 
 // MAS版用: 通知オートメーションのひな形 (トリガー＋「readappで読み上げる」＋「通知」変数の接続済み)。
 // 読み込んだ後にユーザーがアプリを選び、オートメーションをオンにすれば使える。
-// ショートカットの名前はファイル名になる。
+// ショートカットの名前はファイル名になる。macOSのファイル名は濁点が分解形になり、
+// 名前で探す時 (shortcuts list / shortcuts://open-shortcut) に一致しなくなるため、濁点・半濁点を含めない。
 const automationDir = join(root, "src-tauri/resources/automation");
 mkdirSync(automationDir, { recursive: true });
 const automation = {
@@ -93,11 +94,11 @@ const automation = {
   ],
 };
 const automationJson = join(automationDir, "automation.unsigned.json");
-const automationUnsigned = join(automationDir, "readapp通知読み上げ.unsigned.shortcut");
+const automationUnsigned = join(automationDir, "readapp通知.unsigned.shortcut");
 writeFileSync(automationJson, JSON.stringify(automation));
 execFileSync("plutil", ["-convert", "binary1", "-o", automationUnsigned, automationJson]);
 unlinkSync(automationJson);
-signShortcut(automationUnsigned, join(automationDir, "readapp通知読み上げ.shortcut"));
+signShortcut(automationUnsigned, join(automationDir, "readapp通知.shortcut"));
 
 /// 未署名ファイルは取り込めないため、その場で署名する (要Apple IDサインイン)。
 /// Apple側の500エラーが出ることがあるため3回まで再試行する。

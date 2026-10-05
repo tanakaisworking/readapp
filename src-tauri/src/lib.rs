@@ -630,6 +630,9 @@ fn download_shortcut(app: tauri::AppHandle, app_id: String) -> Result<String, St
     Ok(dst.to_string_lossy().to_string())
 }
 
+/// 通知オートメーションのひな形の名前 (= 同梱ファイル名)。濁点を含めない (build-shortcuts.mjs参照)。
+const AUTOMATION_NAME: &str = "readapp通知";
+
 /// 同梱の通知オートメーションのひな形を開く (ショートカットの「追加」画面が出る)。
 #[tauri::command]
 fn add_notify_automation(app: tauri::AppHandle) -> Result<(), String> {
@@ -637,7 +640,7 @@ fn add_notify_automation(app: tauri::AppHandle) -> Result<(), String> {
         .path()
         .resource_dir()
         .map_err(|e| e.to_string())?
-        .join("resources/automation/readapp通知読み上げ.shortcut");
+        .join(format!("resources/automation/{AUTOMATION_NAME}.shortcut"));
     if !file.is_file() {
         return Err("automation template not found. run `npm run build:shortcuts`".to_string());
     }
@@ -654,6 +657,49 @@ fn add_notify_automation(app: tauri::AppHandle) -> Result<(), String> {
     {
         Err("macOS only".to_string())
     }
+}
+
+/// ひな形がショートカットに追加済みか (`shortcuts list` と突き合わせる)。
+#[tauri::command]
+fn notify_automation_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("shortcuts")
+            .arg("list")
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| notifications::nfc(l.trim()) == AUTOMATION_NAME)
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// 追加済みのひな形を編集画面で開く (対象アプリを選んでもらう)。
+#[tauri::command]
+fn open_notify_automation() -> Result<(), String> {
+    let name: String = url::form_urlencoded::byte_serialize(AUTOMATION_NAME.as_bytes()).collect();
+    open_url(&format!("shortcuts://open-shortcut?name={name}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_url(url: &str) -> Result<(), String> {
+    let ok = std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map_err(|e| e.to_string())?
+        .success();
+    if ok { Ok(()) } else { Err(format!("failed to open {url}")) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_url(_url: &str) -> Result<(), String> {
+    Err("macOS only".to_string())
 }
 
 /// ショートカットアプリを開く (MAS版の設定案内用)。
@@ -901,6 +947,8 @@ pub fn run() {
             get_edition,
             open_shortcuts_app,
             add_notify_automation,
+            notify_automation_installed,
+            open_notify_automation,
             ax_trusted,
             ax_request_access,
             ax_watching,
