@@ -295,14 +295,18 @@ export function AutomationSetup({ onDoneChange }: Props) {
                 >
                   {finished ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
                 </span>
-                <span className={cn("text-[13px] font-medium", !current && !finished && "text-muted-foreground")}>
-                  {step.title}
-                </span>
+                <span className="text-[13px] font-medium">{step.title}</span>
                 {finished && <span className="ml-auto text-xs text-muted-foreground">{step.doneLabel}</span>}
               </div>
-              {current && (
-                <div className="mt-2 pl-[30px] text-[13px] leading-relaxed text-muted-foreground">{step.body}</div>
-              )}
+              {/* 流れ全体を最初から見せる。今やるステップだけ強調し、ほかは少し控えめに */}
+              <div
+                className={cn(
+                  "mt-2 pl-[30px] text-[13px] leading-relaxed text-muted-foreground transition-opacity duration-200",
+                  !current && "opacity-60",
+                )}
+              >
+                {step.body}
+              </div>
             </li>
           );
         })}
