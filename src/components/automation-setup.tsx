@@ -133,9 +133,10 @@ export function AutomationSetup({ onDoneChange }: Props) {
   useEffect(() => {
     if (received) return;
     const tick = () =>
-      invoke<{ at: number } | null>("get_last_received")
+      invoke<{ app_id: string; at: number } | null>("get_last_received")
+        // readapp自身のテスト通知が一巡したら完了 (ほかのアプリの通知では完了にしない)。
         // 時刻は秒単位。始めた秒と同じ受信は (やり直し直前の古い通知かもしれないので) 数えない
-        .then((last) => last && last.at > startedAt.current && setReceived(true))
+        .then((last) => last && last.app_id === "readapp" && last.at > startedAt.current && setReceived(true))
         .catch(() => {});
     void tick();
     const id = setInterval(tick, 3000);

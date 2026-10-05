@@ -277,6 +277,15 @@ impl AppSettings {
 struct CatalogApp {
     id: String,
     name: String,
+    /// macOSでの識別 (アプリ別の通知オートメーション用)。同じアプリでも版でバンドルIDが違うことがある
+    #[serde(default)]
+    mac: Vec<MacApp>,
+}
+
+#[derive(Deserialize)]
+struct MacApp {
+    #[serde(rename = "bundleId")]
+    bundle_id: String,
 }
 
 #[derive(Deserialize)]
@@ -664,22 +673,7 @@ fn add_notify_automation(app: tauri::AppHandle) -> Result<(), String> {
 /// ひな形がショートカットに追加済みか (`shortcuts list` と突き合わせる)。
 #[tauri::command]
 fn notify_automation_installed() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("shortcuts")
-            .arg("list")
-            .output()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .any(|l| notifications::nfc(l.trim()) == AUTOMATION_NAME)
-            })
-            .unwrap_or(false)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    installed_shortcut_names().iter().any(|n| n == AUTOMATION_NAME)
 }
 
 /// 追加済みのひな形を編集画面で開く (対象アプリを選んでもらう)。
@@ -726,6 +720,94 @@ fn send_test_notification() -> Result<(), String> {
     {
         Err("macOS only".to_string())
     }
+}
+
+/// アプリ別の通知オートメーションの名前 (= 同梱ファイル名)。
+fn app_automation_name(app_id: &str) -> String {
+    format!("{AUTOMATION_NAME}-{app_id}")
+}
+
+/// 追加済みのショートカット名 (NFCに揃える)。
+fn installed_shortcut_names() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("shortcuts")
+            .arg("list")
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(|l| notifications::nfc(l.trim()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// カタログのアプリのうち、このMacに入っている版のバンドルID。
+fn installed_bundle(app: &CatalogApp) -> Option<&str> {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn readapp_app_installed(bundle_id: *const std::os::raw::c_char) -> bool;
+        }
+        app.mac.iter().map(|m| m.bundle_id.as_str()).find(|b| {
+            std::ffi::CString::new(*b)
+                // SAFETY: NUL終端の文字列を渡し、呼び出し中は有効。
+                .map(|c| unsafe { readapp_app_installed(c.as_ptr()) })
+                .unwrap_or(false)
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+#[derive(Serialize)]
+struct MasApp {
+    id: String,
+    name: String,
+    /// アプリ別の通知オートメーションが追加済みか
+    added: bool,
+}
+
+/// MAS版「読み上げるアプリ」: このMacに入っているカタログのアプリと、追加済みか。
+#[tauri::command(async)]
+fn mas_app_list() -> Vec<MasApp> {
+    let names = installed_shortcut_names();
+    catalog()
+        .iter()
+        .filter(|a| installed_bundle(a).is_some())
+        .map(|a| MasApp {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            added: names.iter().any(|n| *n == app_automation_name(&a.id)),
+        })
+        .collect()
+}
+
+/// アプリ別の通知オートメーション (そのアプリだけが通知元) を開く (ショートカットの「追加」画面が出る)。
+#[tauri::command]
+fn add_app_automation(app: tauri::AppHandle, app_id: String) -> Result<(), String> {
+    let entry = catalog().iter().find(|a| a.id == app_id).ok_or("unknown app")?;
+    let bundle = installed_bundle(entry).ok_or("app not installed")?;
+    let file = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("resources/automation/apps")
+        .join(bundle)
+        .join(format!("{}.shortcut", app_automation_name(&app_id)));
+    if !file.is_file() {
+        return Err("automation not found. run `npm run build:shortcuts`".to_string());
+    }
+    open_url(&file.to_string_lossy())
 }
 
 /// ショートカットアプリを開く (MAS版の設定案内用)。
@@ -976,6 +1058,8 @@ pub fn run() {
             notify_automation_installed,
             open_notify_automation,
             send_test_notification,
+            mas_app_list,
+            add_app_automation,
             ax_trusted,
             ax_request_access,
             ax_watching,
@@ -1113,6 +1197,18 @@ mod tests {
     fn unlisted_app_is_silent_by_default() {
         let settings = AppSettings::default();
         assert!(!should_speak(&settings, "dev.test", Route::Direct));
+    }
+
+    #[test]
+    fn catalog_automation_names_are_safe() {
+        assert!(catalog().iter().any(|a| !a.mac.is_empty()));
+        for app in catalog() {
+            // 名前検索がずれないよう、濁点・半濁点 (分解形になるもの) を含めない
+            let name = app_automation_name(&app.id);
+            assert_eq!(notifications::nfc(&name), name);
+            assert!(!name.chars().any(|c| matches!(c, '\u{3099}' | '\u{309A}')));
+            assert!(name.is_ascii() || !name.chars().any(|c| "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴ".contains(c)));
+        }
     }
 
     #[test]

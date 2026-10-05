@@ -2,6 +2,7 @@
 // 通知オートメーション等から「readappで読み上げる」を呼ぶと、Rust側のパイプラインに渡す。
 // ビルドは build.rs が行う (静的ライブラリ化＋登録情報 Metadata.appintents の生成)。
 import AppIntents
+import AppKit
 import os
 import UserNotifications
 
@@ -33,7 +34,8 @@ struct SpeakIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        guard let text, !text.isEmpty else {
+        // 中身を渡さない通知 (例: カレンダー) は改行だけになるので読まない
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             log.notice("perform skipped: empty text")
             return .result()
         }
@@ -41,6 +43,12 @@ struct SpeakIntent: AppIntent {
         readapp_intent_speak(appName ?? "", text)
         return .result()
     }
+}
+
+/// 指定したバンドルIDのアプリが入っているか (サンドボックス内でも使える)。
+@_cdecl("readapp_app_installed")
+public func readapp_app_installed(_ bundleId: UnsafePointer<CChar>) -> Bool {
+    NSWorkspace.shared.urlForApplication(withBundleIdentifier: String(cString: bundleId)) != nil
 }
 
 /// readappが前面にいる時もテスト通知をバナー表示する (既定では前面アプリの通知は出ない)。

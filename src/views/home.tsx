@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PersonaPicker } from "@/components/persona-picker";
 import { PremiumSheet } from "@/components/premium-sheet";
-import { AutomationSetup } from "@/components/automation-setup";
+import { MasAppList } from "@/components/mas-app-list";
 import {
   KNOWN_APPS,
   VOICES,
@@ -172,6 +172,17 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
       </header>
       <p className="mt-3 text-[22px] font-semibold leading-snug">通知を、好きな声に。</p>
 
+      {mas && (
+        <section aria-label="読み上げるアプリ" className="mt-4">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-xs font-medium text-muted-foreground">読み上げるアプリ</h2>
+            {lastText && <span className="text-xs text-muted-foreground">{lastText}</span>}
+          </div>
+          <div className="mt-2">
+            <MasAppList />
+          </div>
+        </section>
+      )}
       {!mas && (
       <section aria-label="すべて読み上げ" className="mt-4 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
         <div className="flex items-center justify-between gap-3">
@@ -355,28 +366,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
       </section>
       )}
 
-      {mas && (
-        <section aria-label="通知の受け取り" className="mt-5">
-          <h2 className="text-xs font-medium text-muted-foreground">通知の受け取り</h2>
-          <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-            <p className="flex items-center gap-1.5 text-[13px] font-medium">
-              <span className={cn("h-2 w-2 rounded-full", lastAt ? "bg-emerald-500" : "bg-border")} />
-              {lastAt ? "ショートカットから届いています" : "まだ届いていません"}
-            </p>
-            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-              {lastText ?? "読み上げるアプリは、ショートカットの通知オートメーションで選びます。"}
-            </p>
-            <details className="group mt-3" open={!lastAt}>
-              <summary className="cursor-pointer list-none text-[13px] font-medium text-primary outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
-                設定のしかた
-              </summary>
-              <div className="mt-3">
-                <AutomationSetup />
-              </div>
-            </details>
-          </div>
-        </section>
-      )}
+
 
       {platform === "macos" && edition !== "mas" && (
         <section aria-label="直接監視" className="mt-5">

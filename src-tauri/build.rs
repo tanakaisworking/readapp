@@ -78,6 +78,7 @@ fn build_app_intents() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     println!("cargo:rustc-link-lib=framework=AppIntents");
     println!("cargo:rustc-link-lib=framework=UserNotifications");
+    println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=Foundation");
 }
 

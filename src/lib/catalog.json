@@ -1,10 +1,69 @@
 {
   "apps": [
-    { "id": "claude", "name": "Claude", "color": "#E8845C" },
-    { "id": "chatgpt", "name": "ChatGPT", "color": "#5FA97A" },
-    { "id": "slack", "name": "Slack", "color": "#7A8FF0" },
-    { "id": "discord", "name": "Discord", "color": "#8B7CF6" },
-    { "id": "calendar", "name": "カレンダー", "color": "#E8B84B" },
-    { "id": "mail", "name": "メール", "color": "#7FC4C4" }
+    {
+      "id": "claude",
+      "name": "Claude",
+      "color": "#E8845C",
+      "mac": [
+        {
+          "bundleId": "com.anthropic.claudefordesktop",
+          "teamId": "Q6L2SF6YDW"
+        }
+      ]
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "color": "#5FA97A",
+      "mac": [
+        {
+          "bundleId": "com.openai.codex",
+          "teamId": "2DC432GLL2"
+        },
+        {
+          "bundleId": "com.openai.chat",
+          "teamId": "2DC432GLL2"
+        }
+      ]
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "color": "#7A8FF0",
+      "mac": [
+        {
+          "bundleId": "com.tinyspeck.slackmacgap",
+          "teamId": "BQR82RBBHL"
+        }
+      ]
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "color": "#8B7CF6",
+      "mac": [
+        {
+          "bundleId": "com.hnc.Discord",
+          "teamId": "53Q6R32WPB"
+        }
+      ]
+    },
+    {
+      "id": "calendar",
+      "name": "カレンダー",
+      "color": "#E8B84B",
+      "mac": []
+    },
+    {
+      "id": "mail",
+      "name": "メール",
+      "color": "#7FC4C4",
+      "mac": [
+        {
+          "bundleId": "com.apple.mail",
+          "teamId": "0000000000"
+        }
+      ]
+    }
   ]
 }
