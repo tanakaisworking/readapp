@@ -167,6 +167,7 @@ impl AppSettings {
     }
 
     /// observeに加え、表示名が未登録なら覚える (googlechrome → Google Chrome)。
+    #[cfg_attr(not(any(direct_capture, windows)), allow(dead_code))]
     pub(crate) fn observe_named(&self, app_id: &str, display_name: &str) {
         let name = display_name.trim();
         if !name.is_empty() && name != app_id {
@@ -432,14 +433,20 @@ fn get_platform() -> String {
     std::env::consts::OS.to_string()
 }
 
+/// 配布版。"mas" はサンドボックス版で、通知はショートカット経由のみ (直接監視なし)。
+#[tauri::command]
+fn get_edition() -> String {
+    if cfg!(feature = "mas") { "mas" } else { "direct" }.to_string()
+}
+
 /// アクセシビリティ許可の状態 (macOS直接監視用)。
 #[tauri::command]
 fn ax_trusted() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(direct_capture)]
     {
         notifications::ax::trusted()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(direct_capture))]
     {
         false
     }
@@ -448,11 +455,11 @@ fn ax_trusted() -> bool {
 /// プロンプト付きで許可を要求する。初回はシステムダイアログが出る。
 #[tauri::command]
 fn ax_request_access() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(direct_capture)]
     {
         notifications::ax::request_prompt()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(direct_capture))]
     {
         false
     }
@@ -461,11 +468,11 @@ fn ax_request_access() -> bool {
 /// 直接監視が動作中か。
 #[tauri::command]
 fn ax_watching() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(direct_capture)]
     {
         notifications::ax::watching()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(direct_capture))]
     {
         false
     }
@@ -473,7 +480,7 @@ fn ax_watching() -> bool {
 
 #[tauri::command]
 fn ax_open_settings() {
-    #[cfg(target_os = "macos")]
+    #[cfg(direct_capture)]
     notifications::ax::open_settings();
 }
 
@@ -740,6 +747,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_platform,
+            get_edition,
             ax_trusted,
             ax_request_access,
             ax_watching,
@@ -828,7 +836,7 @@ pub fn run() {
                 });
             });
             // macOS直接監視を開始 (dmg版。許可済みの場合のみ)。
-            #[cfg(target_os = "macos")]
+            #[cfg(direct_capture)]
             {
                 notifications::ax::start_if_trusted(handle.clone());
             }

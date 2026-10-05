@@ -13,9 +13,12 @@ pub fn transform(text: &str, instruction: &str, helper: &Path) -> Result<String,
         .arg(instruction)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            eprintln!("[readapp] fm-helper spawn failed: {e}");
+            e.to_string()
+        })?;
     // 書き終えたらstdinを閉じてEOFを送る
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
@@ -24,6 +27,12 @@ pub fn transform(text: &str, instruction: &str, helper: &Path) -> Result<String,
         .wait_with_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
+        // 素文フォールバックの理由を残す (Apple Intelligence無効・サンドボックス等)
+        eprintln!(
+            "[readapp] fm-helper failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         return Err("fm-helper failed".to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())

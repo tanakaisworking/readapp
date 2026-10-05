@@ -14,6 +14,10 @@ edition = "2021"
 name = "readapp_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# MAS配布版 (サンドボックス)。直接監視を外し、ショートカット経由のみにする。
+mas = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

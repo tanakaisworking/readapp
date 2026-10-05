@@ -17,7 +17,7 @@ npm run tauri dev         # 開発起動
 npm run build:dmg         # リリースビルド (Tauriが署名するのでdmg内appもDeveloper ID署名)
 npm run sign:local        # 再署名のみ
 npm run build:win         # Windows用 (Windows上で完結、macOSでは検証のみ)
-npm run package:mas       # MAS用 (要profile＋証明書)
+npm run package:mas       # MAS用 .pkg (要profile)。手元確認は -- --local (サンドボックス版をDeveloper ID署名)
 ```
 
 検証: `cargo test` (15件) / `cargo check` / `npm run build`。

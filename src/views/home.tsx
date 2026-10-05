@@ -25,13 +25,14 @@ interface Props {
   state: FullState;
   personas: Persona[];
   platform: string;
+  edition: string;
   speaking: boolean;
   onPreview: () => void;
   onOpenApp: (id: string) => void;
   onPickPersona: (id: string) => void;
 }
 
-export function Home({ api, state, personas, platform, speaking, onPreview, onOpenApp, onPickPersona }: Props) {
+export function Home({ api, state, personas, platform, edition, speaking, onPreview, onOpenApp, onPickPersona }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [watching, setWatching] = useState(false);
@@ -340,7 +341,7 @@ export function Home({ api, state, personas, platform, speaking, onPreview, onOp
         </Button>
       </section>
 
-      {platform === "macos" && (
+      {platform === "macos" && edition !== "mas" && (
         <section aria-label="直接監視" className="mt-5">
           <h2 className="text-xs font-medium text-muted-foreground">直接監視</h2>
           <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">

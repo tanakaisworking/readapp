@@ -5,11 +5,13 @@ import { KNOWN_APPS, type FullState, type Persona } from "@/lib/apps";
 export function useSettings() {
   const [state, setState] = useState<FullState | null>(null);
   const [platform, setPlatform] = useState("macos");
+  const [edition, setEdition] = useState("direct");
   const [personas, setPersonas] = useState<Persona[]>([]);
 
   useEffect(() => {
     invoke<FullState>("get_state").then(setState).catch(() => {});
     invoke<string>("get_platform").then(setPlatform).catch(() => {});
+    invoke<string>("get_edition").then(setEdition).catch(() => {});
     invoke<Persona[]>("get_personas").then(setPersonas).catch(() => {});
   }, []);
 
@@ -60,6 +62,7 @@ export function useSettings() {
   return {
     state,
     platform,
+    edition,
     personas,
     setEnabled,
     setSpeakAll,

@@ -36,15 +36,16 @@ PC上の他アプリの通知を取得し、内容をローカルAIでキャラ�
 | 形態 | 通知取得 | ビルド | 実行場所 |
 |---|---|---|---|
 | macOS dmg版 | Accessibility経由の直接監視（許可後すぐ使える）＋ Shortcuts互換 | `npm run build:dmg` | このMac |
-| macOS MAS版 | 同上（審査指摘が出たら調整） | `npm run package:mas`（要profile＋証明書） | このMac |
+| macOS MAS版 | Shortcuts経由のみ（サンドボックスでは直接監視不可） | `npm run package:mas`（要profile＋証明書）／手元確認は `npm run package:mas -- --local` | このMac |
 | Windows版 | UserNotificationListener（公式API） | `npm run build:win` | Windows上 |
 
 コードは1つで、OS差分はRustモジュール、版差分は署名・entitlements・
-バンドル設定で吸収する。取得方式に版分岐は置かない
-（どちらも直接監視＋Shortcuts互換。MAS審査で指摘されたら調整する）。
+バンドル設定とCargo feature `mas` で吸収する。MAS版は直接監視 (Accessibility) を外す
+（2026-10-05 実測: サンドボックス内ではプロセス探索が拒否され動かない。審査上も他アプリの画面読み取りは避ける）。
+サンドボックス内でも、読み上げ・キャラ変換・`shortcuts list/run`・ダウンロード保存は動作確認済み。
 
-MAS配布の残作業: provisioning profile取得、`3rd Party Mac Installer`
-証明書発行、公証、App Store Connect登録。詳細は `scripts/package-mas.sh`。
+MAS配布の残作業: Mac App Store用 provisioning profile取得（App ID `com.hibachi.readapp` 登録）、
+App Store Connect登録。証明書（3rd Party Mac Developer Application/Installer）は発行済み。詳細は `scripts/package-mas.sh`。
 
 Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）が公式capabilityで、アプリ識別・通知本文・リアルタイムイベントまで公開APIで取得できる。Macのdmg版はAX監視、MAS版はShortcuts経由で、同じUI/サービスに流す。
 

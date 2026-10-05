@@ -1,5 +1,5 @@
 pub mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(direct_capture)]
 pub mod ax;
 #[cfg(target_os = "windows")]
 pub mod windows;

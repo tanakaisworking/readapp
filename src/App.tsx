@@ -10,7 +10,7 @@ type View = { name: "home" } | { name: "app"; appId: string };
 
 function App() {
   const api = useSettings();
-  const { state, personas, platform } = api;
+  const { state, personas, platform, edition } = api;
   const [view, setView] = useState<View>({ name: "home" });
   const [speaking, setSpeaking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -64,6 +64,7 @@ function App() {
         <Onboarding
           personas={personas}
           platform={platform}
+          edition={edition}
           speaking={speaking}
           onPreview={previewDefault}
           onPickDefaultPersona={(id) => void api.setPersona(id)}
@@ -103,6 +104,7 @@ function App() {
               state={state}
               personas={personas}
               platform={platform}
+              edition={edition}
               speaking={speaking}
               onPreview={previewDefault}
               onOpenApp={(id) => setView({ name: "app", appId: id })}

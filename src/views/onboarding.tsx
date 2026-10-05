@@ -10,13 +10,16 @@ import { cn } from "@/lib/utils";
 interface Props {
   personas: Persona[];
   platform: string;
+  edition: string;
   speaking: boolean;
   onPreview: () => void;
   onPickDefaultPersona: (id: string) => void;
   onDone: () => void;
 }
 
-export function Onboarding({ personas, platform, speaking, onPreview, onPickDefaultPersona, onDone }: Props) {
+export function Onboarding({ personas, platform, edition, speaking, onPreview, onPickDefaultPersona, onDone }: Props) {
+  // 直接監視はdmg版のmacOSだけ。MAS版はショートカット経由のみ。
+  const direct = platform === "macos" && edition !== "mas";
   const [step, setStep] = useState(0);
   const [persona, setPersona] = useState("mio");
   const [granted, setGranted] = useState(false);
@@ -24,14 +27,14 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
   const last = 3;
 
   useEffect(() => {
-    if (platform === "macos") {
+    if (direct) {
       invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
     }
-  }, [platform]);
+  }, [direct]);
 
   // システム設定で許可して戻ってきたら反映する
   useEffect(() => {
-    if (platform !== "macos" || axOn) return;
+    if (!direct || axOn) return;
     const recheck = () =>
       invoke<boolean>("ax_trusted").then((ok) => ok && setAxOn(true)).catch(() => {});
     const id = setInterval(recheck, 2000);
@@ -50,7 +53,7 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
       clearInterval(id);
       unlisten?.();
     };
-  }, [platform, axOn]);
+  }, [direct, axOn]);
 
   const requestAx = async () => {
     const ok = await invoke<boolean>("ax_request_access").catch(() => false);
@@ -126,7 +129,7 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
                     つぎへ
                   </Button>
                 </>
-              ) : axOn ? (
+              ) : direct && axOn ? (
                 <>
                   <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
                     直接監視が効いているので、このまま通知が届きます。ショートカットの登録は要りません。
@@ -136,7 +139,7 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
                     つぎへ
                   </Button>
                 </>
-              ) : (
+              ) : direct ? (
                 <>
                   <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
                     ショートカットなしで受け取るには、直接監視の許可が必要です。
@@ -149,9 +152,11 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
                     ショートカットで進める
                   </Button>
                 </>
-              )}
-              {platform === "macos" && !axOn && (
+              ) : (
                 <>
+                  <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+                    macOSのショートカットを使って通知を受け取ります。アプリごとに一度だけ設定します。
+                  </p>
                   <ol className="mt-4 space-y-3 text-[13px] leading-relaxed">
                     <li className="flex gap-2.5">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">
