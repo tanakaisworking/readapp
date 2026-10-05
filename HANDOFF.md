@@ -1,6 +1,6 @@
 # readapp 引き継ぎメモ
 
-最終更新: 2026-10-04 / main: `afa138c`
+最終更新: 2026-10-05
 
 ## これは何か
 
@@ -14,7 +14,7 @@ npm install
 npm run build:helper      # Swift変換ヘルパー (macOS)
 npm run build:shortcuts   # 配布ショートカット生成＋署名 (要Apple IDサインイン)
 npm run tauri dev         # 開発起動
-npm run build:dmg         # リリースビルド＋Developer ID署名
+npm run build:dmg         # リリースビルド (Tauriが署名するのでdmg内appもDeveloper ID署名)
 npm run sign:local        # 再署名のみ
 npm run build:win         # Windows用 (Windows上で完結、macOSでは検証のみ)
 npm run package:mas       # MAS用 (要profile＋証明書)
@@ -30,9 +30,12 @@ Windows型検査は別途 `/tmp/wcheck` 手順（このMacには残っていな�
 - 設定永続化、声の列挙・指名、キャラ一元化
 - observerの両プロセス登録成功、Accessibility許可取得済み (Team TYX92DB6TA 署名)
 
+- AX直接監視の実バナー取得→発声 (macOS 27.0.1、リマインダー・Spark実通知で確認。#1は解消)
+  - バナーは NotificationCenter の AXSystemDialog 窓内 `AXNotificationCenterBanner/Alert(Stack)` 要素。0.7秒間隔で走査
+  - 起動時に出ていた通知と、一度に3件以上現れた分 (通知センター履歴とみなす) は読まない
+
 ## 未解決 (Issue)
 
-- #1 AX直接監視が実バナーを拾えない（最優先・dmg核心）
 - #2 Windows実機検証
 - #3 MAS配布の残作業
 - #4 Shortcuts自動化の未確定2点
