@@ -166,6 +166,17 @@ impl AppSettings {
         }
     }
 
+    /// observeに加え、表示名が未登録なら覚える (googlechrome → Google Chrome)。
+    pub(crate) fn observe_named(&self, app_id: &str, display_name: &str) {
+        let name = display_name.trim();
+        if !name.is_empty() && name != app_id {
+            if let Ok(mut m) = self.names.lock() {
+                m.entry(app_id.to_string()).or_insert_with(|| name.to_string());
+            }
+        }
+        self.observe(app_id);
+    }
+
     pub(crate) fn observed_apps(&self) -> Vec<String> {
         self.observed
             .lock()
@@ -571,9 +582,33 @@ pub(crate) fn speak_notification(
     } else {
         format!("{}。{}", title, body)
     };
+    let raw = clean_for_speech(&raw);
+    if raw.is_empty() {
+        return None;
+    }
     let text = transform::transform_text(settings, &raw);
     speech::system::speak(&text, &settings.voice());
     Some(text)
+}
+
+/// 読み上げ前の整形: 不可視文字 (メールのプレビュー埋め草等) を消し、空白を詰め、
+/// 長文は先頭だけにする (通知1件を延々と読み続けないため)。
+const SPEECH_MAX_CHARS: usize = 140;
+
+fn clean_for_speech(text: &str) -> String {
+    let visible: String = text
+        .chars()
+        .filter(|c| {
+            !matches!(c, '\u{00AD}' | '\u{034F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}')
+        })
+        .collect();
+    let squeezed = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    if squeezed.chars().count() <= SPEECH_MAX_CHARS {
+        return squeezed;
+    }
+    let mut cut: String = squeezed.chars().take(SPEECH_MAX_CHARS).collect();
+    cut.push('…');
+    cut
 }
 
 /// URLスキーム受信 (M3): readapp://notify?... をパイプラインに流す。
@@ -732,6 +767,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_text_drops_invisible_chars_and_squeezes_spaces() {
+        assert_eq!(
+            clean_for_speech("招待です。 \u{200c} \u{200d}\u{200e}\u{200f} \u{200c}\n次へ"),
+            "招待です。 次へ"
+        );
+    }
+
+    #[test]
+    fn speech_text_is_capped() {
+        let long = "あ".repeat(SPEECH_MAX_CHARS + 10);
+        let out = clean_for_speech(&long);
+        assert_eq!(out.chars().count(), SPEECH_MAX_CHARS + 1);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn invisible_only_notification_is_silent() {
+        let settings = AppSettings::default();
+        assert!(speak_notification(&settings, "x", "\u{200b}", "").is_none());
+    }
 
     #[test]
     fn unknown_app_speaks_by_default() {

@@ -3,17 +3,24 @@
 //! Shortcuts迂回と違い、権限さえ渡せばすぐ使える。MAS版では使わず、
 //! Shortcuts受け口 (macos.rs) と併存する。どちらも同じパイプラインへ流す。
 //!
-//! 方式: NotificationCenterプロセスの新規ウィンドウをAXObserverで監視し、
-//! バナーらしい小窓のテキストを拾う。ウィジェット等の既存窓は対象外
-//! (起動後に生まれた窓だけ見る)。判定は内容ベースで重複除去する。
+//! 実機 (macOS 27) で観測したバナーの構造:
+//!   NotificationCenter
+//!   └ AXWindow subrole=AXSystemDialog (画面全体サイズ。バナー表示中だけ現れる)
+//!     └ … └ AXGroup subrole=AXNotificationCenterBanner / AXNotificationCenterAlert(Stack)
+//!            AXDescription = "<アプリ名>、<タイトル>, <本文>…"
+//!            AXIdentifier  = 通知ごとのUUID
+//!            └ AXStaticText identifier=header/title/subtitle/body
+//! 窓は使い回され、AXWindowCreatedも安定して届かないため、短い間隔の走査で拾う。
 
-use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::c_void;
-use std::os::raw::{c_int, c_long};
-use std::sync::{atomic::{AtomicBool, Ordering}, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::os::raw::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
-use core_foundation::base::TCFType;
+use core_foundation::array::CFArray;
+use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
@@ -22,57 +29,24 @@ use tauri::{AppHandle, Manager};
 use crate::{speak_notification, AppSettings};
 
 type AXError = c_int;
-type AXUIElementRef = *mut c_void;
-type AXObserverRef = *mut c_void;
-type CFRunLoopRef = *mut c_void;
-type CFRunLoopSourceRef = *mut c_void;
-type CFRunLoopMode = *const c_void;
+type AXUIElementRef = *const c_void;
 
 const KAX_ERROR_SUCCESS: AXError = 0;
+/// 走査間隔。バナーは数秒出るので、これで取りこぼさない。
+const POLL_INTERVAL: Duration = Duration::from_millis(700);
+/// 既読キーの保持件数。常駐アラートが画面に残っても二度読みしない。
+const SEEN_CAPACITY: usize = 512;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
-
     fn AXUIElementCreateApplication(pid: c_int) -> AXUIElementRef;
-    fn AXObserverCreate(
-        pid: c_int,
-        callback: extern "C" fn(AXObserverRef, AXUIElementRef, CFStringRef, *mut c_void),
-        out_observer: *mut AXObserverRef,
-    ) -> AXError;
-    fn AXObserverAddNotification(
-        observer: AXObserverRef,
-        element: AXUIElementRef,
-        notification: CFStringRef,
-        refcon: *mut c_void,
-    ) -> AXError;
-    fn AXObserverGetRunLoopSource(observer: AXObserverRef) -> CFRunLoopSourceRef;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
         attribute: CFStringRef,
         value: *mut *const c_void,
     ) -> AXError;
-
-    fn CFRunLoopGetCurrent() -> CFRunLoopRef;
-    fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFRunLoopMode);
-    fn CFRunLoopRun();
-    fn CFGetTypeID(cf: *const c_void) -> c_long;
-    fn CFStringGetTypeID() -> c_long;
-}
-
-/// AX定数は同名の文字列リテラルと等価 (公開仕様)。
-/// 静的リンクでは解決できない環境があるため実行時に生成する。
-fn ax_string(name: &str) -> CFString {
-    CFString::new(name)
-}
-
-fn run_loop_mode() -> CFRunLoopMode {
-    // 起動時に一度だけ使う定数。解放せず置いておく。
-    let mode = CFString::new("kCFRunLoopDefaultMode");
-    let ptr = mode.as_concrete_TypeRef() as CFRunLoopMode;
-    std::mem::forget(mode);
-    ptr
 }
 
 /// 許可済みか (ダイアログは出さない)。
@@ -83,7 +57,7 @@ pub fn trusted() -> bool {
 /// プロンプト付きで許可を要求する。初回はシステムダイアログが出る。
 pub fn request_prompt() -> bool {
     unsafe {
-        let key = ax_string("AXTrustedCheckOptionPrompt");
+        let key = CFString::new("AXTrustedCheckOptionPrompt");
         let options = CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
         AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef())
     }
@@ -99,182 +73,234 @@ pub fn open_settings() {
         .status();
 }
 
-/// 読み上げ済み内容のハッシュ。複数経路の二重読み上げを防ぐ (TTL 120秒)。
-fn seen_contents() -> &'static Mutex<HashMap<u64, Instant>> {
-    static SEEN: OnceLock<Mutex<HashMap<u64, Instant>>> = OnceLock::new();
-    SEEN.get_or_init(|| Mutex::new(HashMap::new()))
-}
+/// AX要素。CFTypeで所有し、解放はDropに任せる (走査を繰り返すのでリークさせない)。
+struct El(CFType);
 
-/// 未読なら true (かつ既読化する)。
-fn mark_fresh_content(texts: &[String]) -> bool {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    texts.hash(&mut h);
-    let key = h.finish();
-    let now = Instant::now();
-    seen_contents()
-        .lock()
-        .map(|mut s| {
-            s.retain(|_, t| now.duration_since(*t) < Duration::from_secs(120));
-            if s.contains_key(&key) {
-                false
-            } else {
-                s.insert(key, now);
-                true
-            }
-        })
-        .unwrap_or(true)
-}
+impl El {
+    fn app(pid: c_int) -> Option<El> {
+        let raw = unsafe { AXUIElementCreateApplication(pid) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: Create系の戻り値で、所有権を受け取る。
+        Some(El(unsafe { CFType::wrap_under_create_rule(raw) }))
+    }
 
-/// ウィンドウの矩形 (AXPosition/AXSize)。取れなければNone。
-/// バナー判定に使う: 画面内の小さな窓だけを通す。
-unsafe fn ax_bounds(element: AXUIElementRef) -> Option<(f64, f64, f64, f64)> {
-    #[repr(C)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    struct CGSize {
-        w: f64,
-        h: f64,
-    }
-    extern "C" {
-        fn AXValueGetValue(value: *const c_void, the_type: *const c_void, out: *mut c_void) -> bool;
-    }
-    let pos_attr = ax_string("AXPosition");
-    let size_attr = ax_string("AXSize");
-    let point_type = CFString::new("CGPoint");
-    let size_type = CFString::new("CGSize");
-    let mut pos_val: *const c_void = std::ptr::null();
-    let mut size_val: *const c_void = std::ptr::null();
-    if AXUIElementCopyAttributeValue(
-        element,
-        pos_attr.as_concrete_TypeRef(),
-        &mut pos_val,
-    ) != KAX_ERROR_SUCCESS
-        || pos_val.is_null()
-    {
-        return None;
-    }
-    if AXUIElementCopyAttributeValue(
-        element,
-        size_attr.as_concrete_TypeRef(),
-        &mut size_val,
-    ) != KAX_ERROR_SUCCESS
-        || size_val.is_null()
-    {
-        return None;
-    }
-    let mut p = CGPoint { x: 0.0, y: 0.0 };
-    let mut s = CGSize { w: 0.0, h: 0.0 };
-    let ok_p = AXValueGetValue(
-        pos_val,
-        point_type.as_concrete_TypeRef() as *const c_void,
-        &mut p as *mut _ as *mut c_void,
-    );
-    let ok_s = AXValueGetValue(
-        size_val,
-        size_type.as_concrete_TypeRef() as *const c_void,
-        &mut s as *mut _ as *mut c_void,
-    );
-    if !ok_p || !ok_s {
-        return None;
-    }
-    Some((p.x, p.y, s.w, s.h))
-}
-
-/// バナーらしい窓か: 画面内で小さく、上部にあるもの。
-/// ウィジェット (画面外) や通知センターパネル (巨大) を弾く。
-fn is_banner_bounds(b: Option<(f64, f64, f64, f64)>) -> bool {
-    match b {
-        Some((x, y, w, h)) => x >= 0.0 && y >= 0.0 && y < 500.0 && w >= 250.0 && h > 0.0 && h <= 300.0,
-        None => false,
-    }
-}
-/// 既存窓の走査 (起動直後・定期)。バナーらしい窓だけ拾う。
-/// observerと二重になってもmark_fresh_contentで弾く。
-fn scan_once(handle: &AppHandle) {
-    let texts_list = all_window_texts();
-    let settings = handle.state::<AppSettings>();
-    for (texts, bounds) in texts_list {
-        if !is_banner_bounds(bounds) {
-            continue;
-        }
-        if texts.is_empty() || texts.len() > 6 {
-            continue;
-        }
-        if !mark_fresh_content(&texts) {
-            continue;
-        }
-        eprintln!("[readapp] ax scan texts: {:?}", texts);
-        let (app_id, title, body) = split_banner(&texts);
-        if title.is_empty() && body.is_empty() {
-            continue;
-        }
-        settings.observe(&app_id);
-        crate::record_received(&settings, &app_id, &title, &body);
-        speak_notification(&settings, &app_id, &title, &body);
-    }
-}
-
-/// NotificationCenter系プロセスの全窓テキストを集める (矩形付き)。
-fn all_window_texts() -> Vec<(Vec<String>, Option<(f64, f64, f64, f64)>)> {
-    let mut out = Vec::new();
-    for proc in ["NotificationCenter", "UserNotificationCenter"] {
-        let pid = match process_pid(proc) {
-            Some(p) => p,
-            None => continue,
+    fn attr(&self, name: &str) -> Option<CFType> {
+        let key = CFString::new(name);
+        let mut value: *const c_void = std::ptr::null();
+        let rc = unsafe {
+            AXUIElementCopyAttributeValue(
+                self.0.as_CFTypeRef(),
+                key.as_concrete_TypeRef(),
+                &mut value,
+            )
         };
-        unsafe {
-            let app_el = AXUIElementCreateApplication(pid);
-            if app_el.is_null() {
-                continue;
-            }
-            for win in ax_windows(app_el) {
-                let bounds = ax_bounds(win);
-                let texts = collect_texts(win, 0);
-                if !texts.is_empty() {
-                    out.push((texts, bounds));
-                }
+        if rc != KAX_ERROR_SUCCESS || value.is_null() {
+            return None;
+        }
+        // SAFETY: Copy系の戻り値で、所有権を受け取る。
+        Some(unsafe { CFType::wrap_under_create_rule(value) })
+    }
+
+    fn string(&self, name: &str) -> Option<String> {
+        self.attr(name)?.downcast::<CFString>().map(|s| s.to_string())
+    }
+
+    fn elements(&self, name: &str) -> Vec<El> {
+        let Some(arr) = self.attr(name).and_then(|v| v.downcast::<CFArray<*const c_void>>()) else {
+            return Vec::new();
+        };
+        arr.get_all_values()
+            .into_iter()
+            .filter(|p| !p.is_null())
+            // SAFETY: 配列内の要素は借用なので、保持する分だけretainする。
+            .map(|p| El(unsafe { CFType::wrap_under_get_rule(p) }))
+            .collect()
+    }
+}
+
+/// 画面に出ている1件分の通知。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Banner {
+    /// 通知要素のUUID (無ければ空)
+    pub uid: String,
+    /// 表示上のアプリ名 (例: "Slack", "カレンダー")
+    pub app_name: String,
+    pub title: String,
+    pub subtitle: String,
+    pub body: String,
+}
+
+impl Banner {
+    /// 既読判定のキー。スタックは同じUUIDのまま中身が入れ替わるので中身も含める。
+    fn key(&self) -> String {
+        format!("{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}", self.uid, self.app_name, self.title, self.subtitle, self.body)
+    }
+}
+
+/// AXDescriptionの先頭からアプリ名を取り出す。"Slack、田中, 本文" → "Slack"。
+/// 英語環境の ", " 区切りにもフォールバックする。
+pub fn app_name_from_description(desc: &str) -> String {
+    let head = match desc.find('、') {
+        Some(i) => &desc[..i],
+        None => desc.split(", ").next().unwrap_or(""),
+    };
+    head.trim().to_string()
+}
+
+/// 通知要素の中身 (説明文と識別子付きテキスト) からBannerを組み立てる。
+/// 識別子が無い版にも備え、識別子なしのテキストは 先頭=タイトル・残り=本文 とみなす。
+pub fn banner_from_parts(uid: &str, desc: &str, texts: &[(String, String)]) -> Option<Banner> {
+    let mut title = String::new();
+    let mut subtitle = String::new();
+    let mut body = Vec::new();
+    let mut loose = Vec::new();
+    for (id, value) in texts {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match id.as_str() {
+            "title" => title = value.to_string(),
+            "subtitle" => subtitle = value.to_string(),
+            "body" => body.push(value.to_string()),
+            // header は「即時通知」等のラベルなので読まない
+            "header" => {}
+            _ => loose.push(value.to_string()),
+        }
+    }
+    if title.is_empty() && body.is_empty() && !loose.is_empty() {
+        title = loose.remove(0);
+        body = loose;
+    }
+    if title.is_empty() && subtitle.is_empty() && body.is_empty() {
+        return None;
+    }
+    Some(Banner {
+        uid: uid.to_string(),
+        app_name: app_name_from_description(desc),
+        title,
+        subtitle,
+        body: body.join("\n"),
+    })
+}
+
+/// 表示上のアプリ名を設定キーに寄せる。カタログ既知のものは既知IDへ、
+/// 英数字名は小文字英数字へ (Slack→slack)、それ以外 (日本語名など) は名前のまま。
+pub fn app_id_for(app_name: &str) -> String {
+    const KNOWN: [(&str, &str); 8] = [
+        ("カレンダー", "calendar"),
+        ("calendar", "calendar"),
+        ("メール", "mail"),
+        ("mail", "mail"),
+        ("claude", "claude"),
+        ("chatgpt", "chatgpt"),
+        ("slack", "slack"),
+        ("discord", "discord"),
+    ];
+    let lower = app_name.trim().to_lowercase();
+    if let Some((_, id)) = KNOWN.iter().find(|(n, _)| *n == lower) {
+        return id.to_string();
+    }
+    let ascii: String = lower.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if !ascii.is_empty() && lower.is_ascii() {
+        return ascii;
+    }
+    if app_name.trim().is_empty() {
+        "通知".to_string()
+    } else {
+        app_name.trim().to_string()
+    }
+}
+
+/// 既読キーの集合 (古いものから捨てる)。
+struct Seen {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl Seen {
+    fn new() -> Self {
+        Self { set: HashSet::new(), order: VecDeque::new() }
+    }
+
+    /// 未読なら true (かつ既読化する)。
+    fn mark(&mut self, key: String) -> bool {
+        if self.set.contains(&key) {
+            return false;
+        }
+        if self.order.len() >= SEEN_CAPACITY {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
             }
         }
+        self.set.insert(key.clone());
+        self.order.push_back(key);
+        true
+    }
+}
+
+fn notification_center_pid() -> Option<c_int> {
+    let out = std::process::Command::new("pgrep")
+        .args(["-x", "NotificationCenter"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().next()?.trim().parse().ok()
+}
+
+/// いま画面に出ている通知を集める。ウィジェット窓は対象外。
+fn visible_banners(pid: c_int) -> Vec<Banner> {
+    let Some(app) = El::app(pid) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for win in app.elements("AXWindows") {
+        if win.string("AXSubrole").as_deref() != Some("AXSystemDialog") {
+            continue;
+        }
+        find_alerts(&win, 0, &mut out);
     }
     out
 }
 
-/// アプリ要素の全ウィンドウ (AXWindows属性)。
-unsafe fn ax_windows(app_el: AXUIElementRef) -> Vec<AXUIElementRef> {
-    let attr = ax_string("AXWindows");
-    let mut value: *const c_void = std::ptr::null();
-    if AXUIElementCopyAttributeValue(app_el, attr.as_concrete_TypeRef(), &mut value) != KAX_ERROR_SUCCESS {
-        return Vec::new();
-    }
-    if value.is_null() {
-        return Vec::new();
-    }
-    let count = cf_array_count(value);
-    (0..count)
-        .map(|i| cf_array_value(value, i) as AXUIElementRef)
-        .filter(|e| !e.is_null())
-        .collect()
+/// 通知1件を表す要素か。バナー型・アラート型とそのスタックが該当する。
+pub fn is_notification_subrole(subrole: &str) -> bool {
+    subrole.starts_with("AXNotificationCenterBanner") || subrole.starts_with("AXNotificationCenterAlert")
 }
 
-fn process_pid(name: &str) -> Option<c_int> {
-    std::process::Command::new("pgrep")
-        .arg("-x")
-        .arg(name)
-        .output()
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .next()?
-                .trim()
-                .parse()
-                .ok()
-        })
+fn find_alerts(el: &El, depth: u8, out: &mut Vec<Banner>) {
+    if depth > 10 {
+        return;
+    }
+    if el.string("AXSubrole").is_some_and(|s| is_notification_subrole(&s)) {
+        let mut texts = Vec::new();
+        collect_texts(el, 0, &mut texts);
+        let uid = el.string("AXIdentifier").unwrap_or_default();
+        let desc = el.string("AXDescription").unwrap_or_default();
+        if let Some(b) = banner_from_parts(&uid, &desc, &texts) {
+            out.push(b);
+        }
+        return;
+    }
+    for child in el.elements("AXChildren") {
+        find_alerts(&child, depth + 1, out);
+    }
+}
+
+fn collect_texts(el: &El, depth: u8, out: &mut Vec<(String, String)>) {
+    if depth > 4 || out.len() > 12 {
+        return;
+    }
+    if el.string("AXRole").as_deref() == Some("AXStaticText") {
+        if let Some(v) = el.string("AXValue") {
+            out.push((el.string("AXIdentifier").unwrap_or_default(), v));
+        }
+        return;
+    }
+    for child in el.elements("AXChildren") {
+        collect_texts(&child, depth + 1, out);
+    }
 }
 
 /// 監視が開始済みか (許可後に自動開始される)。
@@ -284,206 +310,149 @@ pub fn watching() -> bool {
     STARTED.load(Ordering::SeqCst)
 }
 
-/// 許可済みなら監視を開始する。未許可なら許可されるまで待ち続ける。
-/// (設定画面で後から許可した場合や再起動なしで有効化するため)
-/// observer (新着) + 5秒走査 (既存・取りこぼし) の二経路。
+/// 許可済みなら監視を開始する。未許可なら許可されるまで待ち続ける
+/// (設定画面で後から許可した場合も再起動なしで有効化するため)。
 pub fn start_if_trusted(handle: AppHandle) {
-    std::thread::spawn(move || loop {
-        if !STARTED.load(Ordering::SeqCst) && trusted() {
-            STARTED.store(true, Ordering::SeqCst);
-            // 既存分をまず拾う
-            scan_once(&handle);
-            let poller = handle.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(5));
-                scan_once(&poller);
-            });
-            start_observer(handle.clone());
-            return;
+    std::thread::spawn(move || {
+        while !trusted() {
+            std::thread::sleep(Duration::from_secs(2));
         }
-        std::thread::sleep(Duration::from_secs(5));
+        STARTED.store(true, Ordering::SeqCst);
+        eprintln!("[readapp] ax capture: started");
+        let tx = pipeline_worker(handle);
+        watch_loop(tx);
     });
 }
 
-fn start_observer(handle: AppHandle) {
-    // バナーの所属プロセスは版・状態で変わるため、両方を監視する。
-    let mut watched = 0;
-    for proc in ["NotificationCenter", "UserNotificationCenter"] {
-        let Some(pid) = process_pid(proc) else {
-            continue;
-        };
-        let h = handle.clone();
-        std::thread::spawn(move || {
-            observe_pid(h, proc, pid);
-        });
-        watched += 1;
-    }
-    if watched == 0 {
-        eprintln!("[readapp] ax capture: NotificationCenter not found");
-    }
+/// 変換 (最大数秒) を走査スレッドの外で順に処理する。走査は止めない。
+fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
+    let (tx, rx) = mpsc::channel::<Banner>();
+    std::thread::spawn(move || {
+        for b in rx {
+            let settings = handle.state::<AppSettings>();
+            let app_id = app_id_for(&b.app_name);
+            settings.observe_named(&app_id, &b.app_name);
+            let title = if b.subtitle.is_empty() {
+                b.title.clone()
+            } else {
+                format!("{}。{}", b.title, b.subtitle)
+            };
+            crate::record_received(&settings, &app_id, &title, &b.body);
+            speak_notification(&settings, &app_id, &title, &b.body);
+        }
+    });
+    tx
 }
 
-fn observe_pid(handle: AppHandle, proc: &str, pid: c_int) {
-    unsafe {
-        let app_el = AXUIElementCreateApplication(pid);
-        if app_el.is_null() {
-            eprintln!("[readapp] ax capture: AXUIElementCreateApplication failed for {proc}");
-            return;
+fn watch_loop(tx: mpsc::Sender<Banner>) {
+    let mut seen = Seen::new();
+    let mut pid: Option<c_int> = None;
+    // 起動時に出ていたもの (置きっぱなしのアラート等) は読まない
+    let mut primed = false;
+    loop {
+        // NotificationCenterは再起動することがあるので、見失ったら探し直す
+        if pid.is_none() {
+            pid = notification_center_pid();
         }
-        let mut observer: AXObserverRef = std::ptr::null_mut();
-        let rc = AXObserverCreate(pid, observer_callback, &mut observer);
-        if rc != KAX_ERROR_SUCCESS {
-            eprintln!("[readapp] ax capture: AXObserverCreate failed for {proc}: {rc}");
-            return;
-        }
-        // AppHandleはアプリ終了まで生きるためBox化して預ける
-        let boxed = Box::new(handle);
-        let refcon = Box::into_raw(boxed) as *mut c_void;
-        let rc = AXObserverAddNotification(
-            observer,
-            app_el,
-            ax_string("AXWindowCreated").as_concrete_TypeRef(),
-            refcon,
-        );
-        if rc != KAX_ERROR_SUCCESS {
-            eprintln!("[readapp] ax capture: AXObserverAddNotification failed for {proc}: {rc}");
-            return;
-        }
-        eprintln!("[readapp] ax capture: watching {proc} (pid={pid})");
-        let source = AXObserverGetRunLoopSource(observer);
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, run_loop_mode());
-        CFRunLoopRun();
-    }
-}
-
-extern "C" fn observer_callback(
-    _observer: AXObserverRef,
-    element: AXUIElementRef,
-    _notification: CFStringRef,
-    refcon: *mut c_void,
-) {
-    if element.is_null() || refcon.is_null() {
-        return;
-    }
-    // SAFETY: refconは起動時にBox化したAppHandleで、アプリ終了まで生きる。
-    let handle = unsafe { &*(refcon as *const AppHandle) };
-    let settings = handle.state::<AppSettings>();
-    // SAFETY: elementは通知元プロセスの有効なAX要素。
-    let bounds = unsafe { ax_bounds(element) };
-    if !is_banner_bounds(bounds) {
-        return;
-    }
-    // SAFETY: elementは通知元プロセスの有効なAX要素。
-    let texts = unsafe { collect_texts(element, 0) };
-    if texts.is_empty() || texts.len() > 6 {
-        return;
-    }
-    if !mark_fresh_content(&texts) {
-        return;
-    }
-    // 調整用に生テキストを残す (実バナー観測で精緻化する)
-    eprintln!("[readapp] ax banner texts: {:?}", texts);
-    let (app_id, title, body) = split_banner(&texts);
-    // 空の受信は記録だけして喋らない
-    if title.is_empty() && body.is_empty() {
-        return;
-    }
-    settings.observe(&app_id);
-    crate::record_received(&settings, &app_id, &title, &body);
-    speak_notification(&settings, &app_id, &title, &body);
-}
-
-/// AXツリーから表示テキストを順に集める (深さ4まで)。
-unsafe fn collect_texts(element: AXUIElementRef, depth: u8) -> Vec<String> {
-    let mut out = Vec::new();
-    if element.is_null() || depth > 4 {
-        return out;
-    }
-    if let Some(role) = attr_string(element, &ax_string("AXRole")) {
-        if role == "AXStaticText" {
-            if let Some(v) = attr_string(element, &ax_string("AXValue")) {
-                let v = v.trim().to_string();
-                if !v.is_empty() {
-                    out.push(v);
+        if let Some(p) = pid {
+            let banners = visible_banners(p);
+            if banners.is_empty() && notification_center_pid() != Some(p) {
+                pid = None;
+            }
+            for b in banners {
+                if seen.mark(b.key()) && primed {
+                    eprintln!("[readapp] ax banner: {:?}", b);
+                    if tx.send(b).is_err() {
+                        return;
+                    }
                 }
             }
-            return out;
+            primed = true;
         }
+        std::thread::sleep(POLL_INTERVAL);
     }
-    for child in attr_children(element) {
-        out.extend(collect_texts(child, depth + 1));
-        if out.len() > 12 {
-            break;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(id: &str, v: &str) -> (String, String) {
+        (id.to_string(), v.to_string())
+    }
+
+    #[test]
+    fn app_name_from_japanese_description() {
+        assert_eq!(
+            app_name_from_description("リマインダー、readapp観測テスト3, 今日 16:42、スタック"),
+            "リマインダー"
+        );
+    }
+
+    #[test]
+    fn app_name_from_english_description() {
+        assert_eq!(app_name_from_description("Slack, Tanaka, hello"), "Slack");
+    }
+
+    #[test]
+    fn banner_uses_identified_texts_and_skips_header() {
+        let b = banner_from_parts(
+            "U1",
+            "リマインダー、件名, 今日",
+            &[t("header", "即時通知"), t("title", "件名"), t("body", "今日 16:42")],
+        )
+        .unwrap();
+        assert_eq!(b.app_name, "リマインダー");
+        assert_eq!(b.title, "件名");
+        assert_eq!(b.body, "今日 16:42");
+        assert!(b.subtitle.is_empty());
+    }
+
+    #[test]
+    fn banner_without_identifiers_uses_first_as_title() {
+        let b = banner_from_parts("", "Slack、a", &[t("", "田中"), t("", "資料できました")]).unwrap();
+        assert_eq!(b.title, "田中");
+        assert_eq!(b.body, "資料できました");
+    }
+
+    #[test]
+    fn empty_banner_is_none() {
+        assert!(banner_from_parts("U", "Slack", &[t("header", "即時通知")]).is_none());
+    }
+
+    #[test]
+    fn app_ids_map_to_catalog() {
+        assert_eq!(app_id_for("Slack"), "slack");
+        assert_eq!(app_id_for("カレンダー"), "calendar");
+        assert_eq!(app_id_for("ChatGPT"), "chatgpt");
+        assert_eq!(app_id_for("Google Chrome"), "googlechrome");
+        assert_eq!(app_id_for("リマインダー"), "リマインダー");
+        assert_eq!(app_id_for(""), "通知");
+    }
+
+    #[test]
+    fn seen_rejects_repeats_and_evicts_oldest() {
+        let mut s = Seen::new();
+        assert!(s.mark("a".into()));
+        assert!(!s.mark("a".into()));
+        for i in 0..SEEN_CAPACITY {
+            s.mark(format!("k{i}"));
         }
+        assert!(s.mark("a".into()));
     }
-    out
-}
 
-/// バナーテキストの約束 (暫定): 先頭=アプリ名、次=タイトル、残り=本文。
-/// アプリ名は設定キーに正規化する (Slack→slack)。未知はそのまま別アプリ扱い。
-fn split_banner(texts: &[String]) -> (String, String, String) {
-    let norm = |s: &str| {
-        s.to_lowercase()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect::<String>()
-    };
-    match texts {
-        [] => ("通知".to_string(), String::new(), String::new()),
-        [a] => {
-            let id = norm(a);
-            (if id.is_empty() { "通知".to_string() } else { id }, a.clone(), String::new())
-        }
-        [a, b, rest @ ..] => {
-            let id = norm(a);
-            (
-                if id.is_empty() { "通知".to_string() } else { id },
-                b.clone(),
-                rest.join("\n"),
-            )
-        }
+    #[test]
+    fn banner_and_alert_subroles_are_notifications() {
+        assert!(is_notification_subrole("AXNotificationCenterBanner"));
+        assert!(is_notification_subrole("AXNotificationCenterAlert"));
+        assert!(is_notification_subrole("AXNotificationCenterAlertStack"));
+        assert!(!is_notification_subrole("AXHostingView"));
     }
-}
 
-unsafe fn attr_string(element: AXUIElementRef, attr: &CFString) -> Option<String> {
-    let mut value: *const c_void = std::ptr::null();
-    if AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value) != KAX_ERROR_SUCCESS {
-        return None;
+    #[test]
+    fn stack_with_new_content_is_new_key() {
+        let a = banner_from_parts("U", "Slack、x", &[t("title", "1")]).unwrap();
+        let b = banner_from_parts("U", "Slack、x", &[t("title", "2")]).unwrap();
+        assert_ne!(a.key(), b.key());
     }
-    if value.is_null() || CFGetTypeID(value) != CFStringGetTypeID() {
-        return None;
-    }
-    let s: CFString = CFString::wrap_under_create_rule(value as CFStringRef);
-    Some(s.to_string())
-}
-
-unsafe fn attr_children(element: AXUIElementRef) -> Vec<AXUIElementRef> {
-    let children_attr = ax_string("AXChildren");
-    let mut value: *const c_void = std::ptr::null();
-    if AXUIElementCopyAttributeValue(element, children_attr.as_concrete_TypeRef(), &mut value) != KAX_ERROR_SUCCESS {
-        return Vec::new();
-    }
-    if value.is_null() {
-        return Vec::new();
-    }
-    // CFArrayの中身は借用 (解放しない)
-    let count = cf_array_count(value);
-    (0..count)
-        .map(|i| cf_array_value(value, i) as AXUIElementRef)
-        .filter(|e| !e.is_null())
-        .collect()
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
-    fn CFArrayGetCount(array: *const c_void) -> c_long;
-    fn CFArrayGetValueAtIndex(array: *const c_void, idx: c_long) -> *const c_void;
-}
-
-unsafe fn cf_array_count(array: *const c_void) -> c_long {
-    CFArrayGetCount(array)
-}
-
-unsafe fn cf_array_value(array: *const c_void, idx: c_long) -> *const c_void {
-    CFArrayGetValueAtIndex(array, idx)
 }
