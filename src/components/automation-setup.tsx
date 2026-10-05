@@ -131,7 +131,8 @@ export function AutomationSetup({ onDoneChange }: Props) {
     if (received) return;
     const tick = () =>
       invoke<{ at: number } | null>("get_last_received")
-        .then((last) => last && last.at >= startedAt.current && setReceived(true))
+        // 時刻は秒単位。始めた秒と同じ受信は (やり直し直前の古い通知かもしれないので) 数えない
+        .then((last) => last && last.at > startedAt.current && setReceived(true))
         .catch(() => {});
     void tick();
     const id = setInterval(tick, 3000);
