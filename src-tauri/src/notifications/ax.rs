@@ -251,6 +251,14 @@ fn notification_center_pid() -> Option<c_int> {
     String::from_utf8_lossy(&out.stdout).lines().next()?.trim().parse().ok()
 }
 
+fn process_alive(pid: c_int) -> bool {
+    extern "C" {
+        fn kill(pid: c_int, sig: c_int) -> c_int;
+    }
+    // シグナル0は送らずに存在だけ確かめる
+    unsafe { kill(pid, 0) == 0 }
+}
+
 /// いま画面に出ている通知を集める。ウィジェット窓は対象外。
 fn visible_banners(pid: c_int) -> Vec<Banner> {
     let Some(app) = El::app(pid) else {
@@ -349,7 +357,7 @@ fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
 /// 1回の走査で新規がこれより多ければ、バナーではなく通知センターの履歴表示とみなす。
 /// ponytail: 件数だけの判定。履歴を開いた時に2件以下の未読があれば読んでしまう。
 const BURST_LIMIT: usize = 2;
-/// NotificationCenterの再起動に備えてpidを引き直す間隔 (走査回数)。
+/// pidを念のため引き直す間隔 (走査回数)。プロセス終了は毎回の生存確認で即検知する。
 const PID_REFRESH_TICKS: u32 = 40;
 
 /// 走査結果のうち読み上げるものを返す。全件を既読化する。
@@ -372,7 +380,7 @@ fn watch_loop(tx: mpsc::Sender<Banner>) {
     let mut primed = false;
     let mut ticks: u32 = 0;
     loop {
-        if pid.is_none() || ticks % PID_REFRESH_TICKS == 0 {
+        if ticks % PID_REFRESH_TICKS == 0 || !pid.is_some_and(process_alive) {
             pid = notification_center_pid();
         }
         ticks = ticks.wrapping_add(1);
@@ -470,6 +478,12 @@ mod tests {
         assert!(is_notification_subrole("AXNotificationCenterAlert"));
         assert!(is_notification_subrole("AXNotificationCenterAlertStack"));
         assert!(!is_notification_subrole("AXHostingView"));
+    }
+
+    #[test]
+    fn process_alive_detects_self_and_missing() {
+        assert!(process_alive(std::process::id() as c_int));
+        assert!(!process_alive(c_int::MAX));
     }
 
     #[test]
