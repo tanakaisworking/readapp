@@ -37,6 +37,10 @@ Windows型検査は別途 `/tmp/wcheck` 手順（このMacには残っていな�
 - 画面と挙動の一致: 未設定はカタログ (catalog.json) のアプリだけON、見つけたアプリは追加するまで読まない。
   設定キーは表示名から `notifications::app_id_for` で作る (NFC正規化済み、macOS/Windows共通)
 
+- MAS版: ショートカットの部品「readappで読み上げる」(App Intents) とひな形オートメーションで、通知→読み上げをサンドボックス内で確認
+  - ひな形の再生成は `npm run build:shortcuts` (要Apple IDサインイン)。部品の検証手順は poc/appintents/README.md
+  - dmg版にも部品は入る。直接監視と二重に届いた同じ通知は20秒以内なら1回だけ読む
+
 ## 未解決 (Issue)
 
 - #2 Windows実機検証

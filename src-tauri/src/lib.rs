@@ -37,6 +37,8 @@ pub struct AppSettings {
     observed: Mutex<HashSet<String>>,
     /// イベント送信用 (setup時に設定)。
     app_handle: Mutex<Option<tauri::AppHandle>>,
+    /// 最近読んだ通知 (重複防止用。実行時のみ)。
+    recent_spoken: Mutex<Vec<(String, std::time::Instant)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +101,7 @@ impl Default for AppSettings {
             last_received: Mutex::new(None),
             observed: Mutex::new(HashSet::new()),
             app_handle: Mutex::new(None),
+            recent_spoken: Mutex::new(Vec::new()),
         }
     }
 }
@@ -167,7 +170,6 @@ impl AppSettings {
     }
 
     /// observeに加え、表示名が未登録なら覚える (googlechrome → Google Chrome)。
-    #[cfg_attr(not(any(direct_capture, windows)), allow(dead_code))]
     pub(crate) fn observe_named(&self, app_id: &str, display_name: &str) {
         let name = display_name.trim();
         if !name.is_empty() && name != app_id {
@@ -628,6 +630,50 @@ fn download_shortcut(app: tauri::AppHandle, app_id: String) -> Result<String, St
     Ok(dst.to_string_lossy().to_string())
 }
 
+/// 同梱の通知オートメーションのひな形を開く (ショートカットの「追加」画面が出る)。
+#[tauri::command]
+fn add_notify_automation(app: tauri::AppHandle) -> Result<(), String> {
+    let file = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("resources/automation/readapp通知読み上げ.shortcut");
+    if !file.is_file() {
+        return Err("automation template not found. run `npm run build:shortcuts`".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("open")
+            .arg(&file)
+            .status()
+            .map_err(|e| e.to_string())?
+            .success();
+        if ok { Ok(()) } else { Err("failed to open template".to_string()) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("macOS only".to_string())
+    }
+}
+
+/// ショートカットアプリを開く (MAS版の設定案内用)。
+#[tauri::command]
+fn open_shortcuts_app() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("open")
+            .args(["-b", "com.apple.shortcuts"])
+            .status()
+            .map_err(|e| e.to_string())?
+            .success();
+        if ok { Ok(()) } else { Err("failed to open Shortcuts".to_string()) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("macOS only".to_string())
+    }
+}
+
 #[tauri::command]
 fn windows_ensure_access(app: tauri::AppHandle) {
     #[cfg(target_os = "windows")]
@@ -647,7 +693,36 @@ pub(crate) fn speak_notification(
     if !should_speak(settings, app_id) {
         return None;
     }
+    if !fresh_notification(settings, &format!("{title}\n{body}")) {
+        return None;
+    }
     speak_now(settings, app_id, title, body)
+}
+
+/// 同じ通知を複数の経路 (直接監視とショートカットの部品) で受けた時に1回だけ読むための窓。
+const DUPLICATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 経路ごとの区切り (「。」「改行」等) の差を無視して比べる。
+fn notification_key(text: &str) -> String {
+    text.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// 未読なら true (かつ既読化する)。窓内に同じ通知を読んでいれば false。
+fn fresh_notification(settings: &AppSettings, text: &str) -> bool {
+    let key = notification_key(text);
+    if key.is_empty() {
+        return true;
+    }
+    let now = std::time::Instant::now();
+    let Ok(mut recent) = settings.recent_spoken.lock() else {
+        return true;
+    };
+    recent.retain(|(_, at)| now.duration_since(*at) < DUPLICATE_WINDOW);
+    if recent.iter().any(|(k, _)| *k == key) {
+        return false;
+    }
+    recent.push((key, now));
+    true
 }
 
 /// transform → speak (ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
@@ -688,6 +763,68 @@ fn clean_for_speech(text: &str) -> String {
     let mut cut: String = squeezed.chars().take(SPEECH_MAX_CHARS).collect();
     cut.push('…');
     cut
+}
+
+/// ショートカットの部品から呼ばれた時に使う、起動後のハンドル。
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// アプリ名なしで部品が呼ばれた時の通知元ID (ON/OFFに関わらず読む)。
+const INTENT_APP_ID: &str = "shortcut";
+
+/// 部品の呼び出し先。アプリ名があればアプリ別のON/OFFに従い、空なら必ず読む。
+#[derive(Debug, PartialEq, Eq)]
+enum IntentTarget {
+    Always,
+    App { id: String, name: String },
+}
+
+fn intent_target(app_name: &str) -> IntentTarget {
+    let name = notifications::nfc(app_name.trim());
+    if name.is_empty() {
+        IntentTarget::Always
+    } else {
+        IntentTarget::App { id: notifications::app_id_for(&name), name }
+    }
+}
+
+/// ショートカットの部品「readappで読み上げる」(intents/Intents.swift) の受け口。
+/// Swift側 (部品の実行) を待たせないよう、変換・発声は別スレッドで行ってすぐ返す。
+#[no_mangle]
+pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *const std::os::raw::c_char) {
+    if app.is_null() || text.is_null() {
+        return;
+    }
+    // SAFETY: Swift側がNUL終端のUTF-8文字列を渡し、呼び出し中は有効。ここで所有文字列に写す。
+    let app = unsafe { std::ffi::CStr::from_ptr(app) }.to_string_lossy().into_owned();
+    let text = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned();
+    std::thread::spawn(move || {
+        // 部品から起動された直後はsetupの完了を待つ (最大5秒)
+        let handle = (0..50).find_map(|_| {
+            let h = APP_HANDLE.get().cloned();
+            if h.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            h
+        });
+        let Some(handle) = handle else {
+            eprintln!("[readapp] intent: app not ready, dropped");
+            return;
+        };
+        let settings = handle.state::<AppSettings>();
+        match intent_target(&app) {
+            IntentTarget::Always => {
+                record_received(&settings, INTENT_APP_ID, "", &text);
+                if fresh_notification(&settings, &text) {
+                    speak_now(&settings, INTENT_APP_ID, "", &text);
+                }
+            }
+            IntentTarget::App { id, name } => {
+                settings.observe_named(&id, &name);
+                record_received(&settings, &id, "", &text);
+                speak_notification(&settings, &id, "", &text);
+            }
+        }
+    });
 }
 
 /// URLスキーム受信 (M3): readapp://notify?... をパイプラインに流す。
@@ -748,6 +885,8 @@ pub fn run() {
             greet,
             get_platform,
             get_edition,
+            open_shortcuts_app,
+            add_notify_automation,
             ax_trusted,
             ax_request_access,
             ax_watching,
@@ -779,6 +918,8 @@ pub fn run() {
             handle
                 .state::<AppSettings>()
                 .set_app_handle(handle.clone());
+            // ショートカットの部品からの呼び出しを受け付け始める
+            let _ = APP_HANDLE.set(handle.clone());
             // 保存済み設定の読み込み (M5)。無ければ既定値のまま。
             {
                 let settings = handle.state::<AppSettings>();
@@ -952,6 +1093,33 @@ mod tests {
         assert_eq!(
             transform::transform_text(&settings, "作業が完了しました。", None),
             "作業が完了しました。"
+        );
+    }
+
+    #[test]
+    fn same_notification_from_two_routes_is_fresh_once() {
+        let settings = AppSettings::default();
+        // 直接監視は「タイトル。本文」、部品は「タイトル\n本文」で届く
+        assert!(fresh_notification(&settings, "会議。15時から"));
+        assert!(!fresh_notification(&settings, "会議\n15時から"));
+        assert!(fresh_notification(&settings, "会議。16時から"));
+    }
+
+    #[test]
+    fn intent_without_app_always_speaks() {
+        assert_eq!(intent_target("  "), IntentTarget::Always);
+    }
+
+    #[test]
+    fn intent_app_name_maps_to_settings_key() {
+        assert_eq!(
+            intent_target("Slack"),
+            IntentTarget::App { id: "slack".into(), name: "Slack".into() }
+        );
+        // ショートカットの変数は分解形で届くことがある
+        assert_eq!(
+            intent_target("カレンタ\u{3099}ー"),
+            IntentTarget::App { id: "calendar".into(), name: "カレンダー".into() }
         );
     }
 

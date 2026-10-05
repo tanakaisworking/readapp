@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 const require = createRequire(import.meta.url);
 const { actionOutput, withVariables } = require("@joshfarrant/shortcuts-js");
@@ -49,10 +50,58 @@ for (const app of catalog.apps) {
   template.WFWorkflowName = `readapp-${app.id}`;
   const shortcut = encodeShortcut(template);
   const unsigned = join(outDir, `readapp-${app.id}.unsigned.shortcut`);
-  const out = join(outDir, `readapp-${app.id}.shortcut`);
   writeFileSync(unsigned, shortcut);
-  // 未署名ファイルは取り込めないため、その場で署名する (要Apple IDサインイン)。
-  // Apple側の500エラーが出ることがあるため3回まで再試行する。
+  signShortcut(unsigned, join(outDir, `readapp-${app.id}.shortcut`));
+}
+
+// MAS版用: 通知オートメーションのひな形 (トリガー＋「readappで読み上げる」＋「通知」変数の接続済み)。
+// 読み込んだ後にユーザーがアプリを選び、オートメーションをオンにすれば使える。
+// ショートカットの名前はファイル名になる。
+const automationDir = join(root, "src-tauri/resources/automation");
+mkdirSync(automationDir, { recursive: true });
+const automation = {
+  WFWorkflowClientVersion: "3000",
+  WFWorkflowMinimumClientVersion: 900,
+  WFWorkflowIcon: { WFWorkflowIconStartColor: 4274264319, WFWorkflowIconGlyphNumber: 59446 },
+  WFWorkflowTypes: [],
+  WFWorkflowInputContentItemClasses: ["WFStringContentItem"],
+  // 対象アプリは空にしておく (ショートカット側で「アプリを構成してください」と案内される)
+  WFWorkflowTriggers: [
+    { WFTriggerIdentifier: "WFNotificationTrigger", WFTriggerUUID: randomUUID().toUpperCase(), WFTriggerSerializedParameters: {} },
+  ],
+  WFWorkflowActions: [
+    {
+      WFWorkflowActionIdentifier: "com.hibachi.readapp.SpeakIntent",
+      WFWorkflowActionParameters: {
+        // 「通知」変数 (トリガーの出力) をテキストにつなぐ
+        text: {
+          Value: {
+            attachmentsByRange: { "{0, 1}": { Type: "TriggerOutput", TriggerIdentifier: "WFNotificationTrigger" } },
+            string: "\ufffc",
+          },
+          WFSerializationType: "WFTextTokenString",
+        },
+        AppIntentDescriptor: {
+          BundleIdentifier: "com.hibachi.readapp",
+          Name: "readapp",
+          AppIntentIdentifier: "SpeakIntent",
+          TeamIdentifier: "TYX92DB6TA",
+        },
+        UUID: randomUUID().toUpperCase(),
+      },
+    },
+  ],
+};
+const automationJson = join(automationDir, "automation.unsigned.json");
+const automationUnsigned = join(automationDir, "readapp通知読み上げ.unsigned.shortcut");
+writeFileSync(automationJson, JSON.stringify(automation));
+execFileSync("plutil", ["-convert", "binary1", "-o", automationUnsigned, automationJson]);
+unlinkSync(automationJson);
+signShortcut(automationUnsigned, join(automationDir, "readapp通知読み上げ.shortcut"));
+
+/// 未署名ファイルは取り込めないため、その場で署名する (要Apple IDサインイン)。
+/// Apple側の500エラーが出ることがあるため3回まで再試行する。
+function signShortcut(unsigned, out) {
   let signed = false;
   for (let attempt = 1; attempt <= 3 && !signed; attempt++) {
     try {
@@ -66,9 +115,9 @@ for (const app of catalog.apps) {
   }
   unlinkSync(unsigned);
   if (!signed) {
-    console.error(`FAILED to sign readapp-${app.id}`);
+    console.error(`FAILED to sign ${out}`);
     process.exitCode = 1;
-    continue;
+    return;
   }
   console.log(`wrote ${out}`);
 }

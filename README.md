@@ -36,13 +36,20 @@ PC上の他アプリの通知を取得し、内容をローカルAIでキャラ�
 | 形態 | 通知取得 | ビルド | 実行場所 |
 |---|---|---|---|
 | macOS dmg版 | Accessibility経由の直接監視（許可後すぐ使える）＋ Shortcuts互換 | `npm run build:dmg` | このMac |
-| macOS MAS版 | Shortcuts経由のみ（サンドボックスでは直接監視不可） | `npm run package:mas`（要profile＋証明書）／手元確認は `npm run package:mas -- --local` | このMac |
+| macOS MAS版 | Shortcutsの通知オートメーション＋アプリ提供の部品「readappで読み上げる」（App Intents。サンドボックスでは直接監視不可） | `npm run package:mas`（要profile＋証明書）／手元確認は `npm run package:mas -- --local` | このMac |
 | Windows版 | UserNotificationListener（公式API） | `npm run build:win` | Windows上 |
 
 コードは1つで、OS差分はRustモジュール、版差分は署名・entitlements・
 バンドル設定とCargo feature `mas` で吸収する。MAS版は直接監視 (Accessibility) を外す
 （2026-10-05 実測: サンドボックス内ではプロセス探索が拒否され動かない。審査上も他アプリの画面読み取りは避ける）。
 サンドボックス内でも、読み上げ・キャラ変換・`shortcuts list/run`・ダウンロード保存は動作確認済み。
+
+MAS版の通知の受け取り方 (2026-10-06 実装・実機確認):
+- アプリがショートカットの部品「readappで読み上げる」を提供する (`src-tauri/intents/Intents.swift`、build.rsがXcodeなしで組み込む)
+- 同梱のひな形 `resources/automation/readapp通知読み上げ.shortcut` (通知トリガー＋部品＋「通知」変数の接続済み) をアプリから追加する
+- ユーザーはショートカット側で対象アプリを選び (複数可)、オートメーションをオンにするだけ。URLスキーム方式と違い前面に出ない
+- 読み込んだオートメーションは最初オフ。アプリ名は部品に渡らないため、MAS版ではアプリ別ON/OFFを画面に出さず、対象アプリはショートカット側で選ぶ
+- 部品は `/Applications` か `~/Applications` に置いたアプリからしか登録されない (一時フォルダは対象外)
 
 MAS配布の残作業: Mac App Store用 provisioning profile取得（App ID `com.hibachi.readapp` 登録）、
 App Store Connect登録。証明書（3rd Party Mac Developer Application/Installer）は発行済み。詳細は `scripts/package-mas.sh`。

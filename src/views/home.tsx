@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PersonaPicker } from "@/components/persona-picker";
 import { PremiumSheet } from "@/components/premium-sheet";
+import { ShortcutSetup } from "@/components/shortcut-setup";
 import {
   KNOWN_APPS,
   VOICES,
@@ -48,6 +49,11 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
     (o) => !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
   );
   const totalOn = onCount + extraIds.filter((id) => isOn(state, id)).length;
+  // MAS版は読み上げるアプリをショートカット側 (通知オートメーションのアプリ選択) で決める
+  const mas = edition === "mas";
+  const lastText = lastAt
+    ? `最終受信: ${new Date(lastAt * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}`
+    : null;
   const active = personas.find((p) => p.id === state.persona);
   const voices = [
     ...VOICES.filter((v) => !v.premium),
@@ -148,20 +154,25 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
         <span
           className={cn(
             "h-2.5 w-2.5 rounded-full",
-            state.speak_all || totalOn > 0 ? "bg-emerald-500" : "bg-border",
+            (mas ? lastAt : state.speak_all || totalOn > 0) ? "bg-emerald-500" : "bg-border",
           )}
         />
         <h1 className="text-[15px] font-semibold">readapp</h1>
         <p className="ml-auto text-xs text-muted-foreground">
-          {state.speak_all
-            ? "すべての通知を読み上げ中"
-            : totalOn > 0
-              ? `${totalOn}件のアプリを読み上げ中`
-              : "おやすみ中"}
+          {mas
+            ? lastAt
+              ? "通知を受け取っています"
+              : "ショートカットの設定待ち"
+            : state.speak_all
+              ? "すべての通知を読み上げ中"
+              : totalOn > 0
+                ? `${totalOn}件のアプリを読み上げ中`
+                : "おやすみ中"}
         </p>
       </header>
       <p className="mt-3 text-[22px] font-semibold leading-snug">通知を、好きな声に。</p>
 
+      {!mas && (
       <section aria-label="すべて読み上げ" className="mt-4 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -177,6 +188,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
           />
         </div>
       </section>
+      )}
 
       <section aria-label="キャラ" className="mt-4">
         <h2 className="text-xs font-medium text-muted-foreground">キャラ</h2>
@@ -281,6 +293,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
         </ul>
       </section>
 
+      {!mas && (
       <section aria-label="読み上げるアプリ" className="mt-5">
         <h2 className="text-xs font-medium text-muted-foreground">読み上げるアプリ</h2>
         <ul className="mt-2 space-y-1.5">
@@ -340,6 +353,30 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
           ファイルからアプリを追加
         </Button>
       </section>
+      )}
+
+      {mas && (
+        <section aria-label="通知の受け取り" className="mt-5">
+          <h2 className="text-xs font-medium text-muted-foreground">通知の受け取り</h2>
+          <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
+            <p className="flex items-center gap-1.5 text-[13px] font-medium">
+              <span className={cn("h-2 w-2 rounded-full", lastAt ? "bg-emerald-500" : "bg-border")} />
+              {lastAt ? "ショートカットから届いています" : "まだ届いていません"}
+            </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              {lastText ?? "読み上げるアプリは、ショートカットの通知オートメーションで選びます。"}
+            </p>
+            <details className="group mt-3" open={!lastAt}>
+              <summary className="cursor-pointer list-none text-[13px] font-medium text-primary outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+                設定のしかた
+              </summary>
+              <div className="mt-3">
+                <ShortcutSetup />
+              </div>
+            </details>
+          </div>
+        </section>
+      )}
 
       {platform === "macos" && edition !== "mas" && (
         <section aria-label="直接監視" className="mt-5">

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { PersonaPicker } from "@/components/persona-picker";
+import { ShortcutSetup } from "@/components/shortcut-setup";
 import type { Persona } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -155,33 +156,13 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
               ) : (
                 <>
                   <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-                    macOSのショートカットを使って通知を受け取ります。アプリごとに一度だけ設定します。
+                    macOSのショートカットで通知を受け取ります。設定は一度だけです。
                   </p>
-                  <ol className="mt-4 space-y-3 text-[13px] leading-relaxed">
-                    <li className="flex gap-2.5">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">
-                        1
-                      </span>
-                      読み上げたいアプリの設定を開き、ショートカットをダウンロードする
-                    </li>
-                    <li className="flex gap-2.5">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">
-                        2
-                      </span>
-                      ダウンロードしたファイルをダブルクリックして登録する
-                    </li>
-                    <li className="flex gap-2.5">
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-semibold text-primary">
-                        3
-                      </span>
-                      通知オートメーションで「ショートカットを実行」を選ぶ
-                    </li>
-                  </ol>
-                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    以後のオン・オフはこのアプリで変えられます。
-                  </p>
+                  <div className="mt-4">
+                    <ShortcutSetup />
+                  </div>
                   <div className="flex-1" />
-                  <Button className="w-full" onClick={() => setStep(2)}>
+                  <Button className="mt-4 w-full" variant="ghost" onClick={() => setStep(2)}>
                     つぎへ
                   </Button>
                 </>

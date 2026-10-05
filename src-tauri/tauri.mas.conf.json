@@ -3,6 +3,9 @@
   "identifier": "com.hibachi.readapp",
   "bundle": {
     "category": "Utility",
+    "resources": {
+      "resources/shortcuts/": null
+    },
     "macOS": {
       "minimumSystemVersion": "15.0"
     }
