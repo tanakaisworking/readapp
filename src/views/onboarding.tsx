@@ -36,13 +36,17 @@ export function Onboarding({ personas, platform, speaking, onPreview, onPickDefa
       invoke<boolean>("ax_trusted").then((ok) => ok && setAxOn(true)).catch(() => {});
     const id = setInterval(recheck, 2000);
     let unlisten: (() => void) | null = null;
+    let disposed = false;
     getCurrentWindow()
       .onFocusChanged((e) => e.payload && void recheck())
       .then((f) => {
-        unlisten = f;
+        // 登録完了より先に片付けられていたら、その場で解除する
+        if (disposed) f();
+        else unlisten = f;
       })
       .catch(() => {});
     return () => {
+      disposed = true;
       clearInterval(id);
       unlisten?.();
     };

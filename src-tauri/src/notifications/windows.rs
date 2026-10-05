@@ -130,7 +130,7 @@ pub fn start_listener(handle: AppHandle) {
                 return Ok(());
             }
             let settings = moved.state::<AppSettings>();
-            settings.observe(&parsed.app_id);
+            settings.observe_named(&parsed.app_id, &parsed.app_name);
             speak_notification(&settings, &parsed.app_id, &parsed.title, &parsed.body);
             Ok(())
         },
@@ -145,7 +145,7 @@ pub fn start_listener(handle: AppHandle) {
                     continue;
                 }
                 let settings = handle.state::<AppSettings>();
-                settings.observe(&n.app_id);
+                settings.observe_named(&n.app_id, &n.app_name);
                 speak_notification(&settings, &n.app_id, &n.title, &n.body);
             }
         }
@@ -157,12 +157,14 @@ pub fn start_listener(handle: AppHandle) {
 fn extract(n: &UserNotification) -> Option<WindowsNotification> {
     let id = n.Id().ok()?;
     let appinfo: AppInfo = n.AppInfo().ok()?;
-    let app_id = appinfo.AppUserModelId().ok()?.to_string();
+    let aumid = appinfo.AppUserModelId().ok()?.to_string();
     let app_name = appinfo
         .DisplayInfo()
         .and_then(|d| d.DisplayName())
         .map(|s| s.to_string())
-        .unwrap_or_else(|_| app_id.clone());
+        .unwrap_or_else(|_| aumid.clone());
+    // 設定キーはmacOSと同じく表示名から作る (Slack→slack)。画面のカタログIDと揃える。
+    let app_id = super::app_id_for(&app_name);
     let toast = n.Notification().ok()?;
     let visual = toast.Visual().ok()?;
     let binding = visual

@@ -523,6 +523,7 @@ fn resolve_app(path: String) -> Option<AppEntry> {
         .unwrap_or(stem);
     #[cfg(not(target_os = "macos"))]
     let name = stem;
+    let name = notifications::nfc(&name);
     let id = notifications::app_id_for(&name);
     Some(AppEntry { id, name })
 }
