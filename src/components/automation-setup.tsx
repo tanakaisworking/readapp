@@ -3,6 +3,7 @@ import { Bell, Check, ExternalLink, Keyboard, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
+import { AutomationListHint } from "@/components/automation-list-hint";
 import { cn } from "@/lib/utils";
 
 // MAS版の通知の受け取り設定 (ショートカットの通知オートメーション)。
@@ -221,24 +222,15 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
       body: (
         <>
           <p>
-            ショートカットの「オートメーション」で「{AUTOMATION}」のスイッチをオンにします。
+            ショートカットの「オートメーション」一覧で、「readappからの通知を受け取ったとき」の右端のスイッチをオンにします。
             {practice
               ? "テスト通知を送り、readappの通知が読み上げられたら完了です。"
               : "最後にテスト通知を送り、読み上げられたら完了です。"}
           </p>
           <MockToggle />
+          <AutomationListHint />
           <p className="mt-2 text-xs">初回は右上に「readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                void run("open_shortcuts_app", "開けませんでした。Launchpadから「ショートカット」を開いてください。")
-              }
-            >
-              <ExternalLink />
-              開く
-            </Button>
             <Button
               size="sm"
               onClick={async () => {
@@ -431,13 +423,13 @@ function MockApps() {
 
 function MockToggle() {
   return (
-    <MockFrame label="ショートカットのオートメーション一覧。readapp通知のスイッチをオンにする">
+    <MockFrame label="ショートカットのオートメーション一覧。readappからの通知を受け取ったとき の行の右端のスイッチをオンにする">
       <div className="flex items-center gap-2 text-[11px]">
-        <span className="rounded-[6px] bg-card px-1.5 py-0.5 font-medium text-foreground">オートメーション</span>
-        <span className="text-muted-foreground" aria-hidden="true">
-          →
+        <Bell className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium text-foreground">readappからの通知を受け取ったとき</span>
+          <span className="block truncate text-[10px] text-muted-foreground">{AUTOMATION}</span>
         </span>
-        <span className="min-w-0 flex-1 truncate text-foreground">{AUTOMATION}</span>
         <span
           className="relative h-4 w-7 shrink-0 rounded-full ring-2"
           style={{ backgroundColor: SHORTCUTS_BLUE, ["--tw-ring-color" as string]: `${SHORTCUTS_BLUE}55` }}

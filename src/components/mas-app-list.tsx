@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { AutomationSetup } from "@/components/automation-setup";
+import { AutomationListHint } from "@/components/automation-list-hint";
 import { knownApp } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -192,8 +193,9 @@ export function MasAppList() {
       )}
 
       <div className="mt-3 rounded-lg bg-surface-muted px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
-        「追加」でショートカットが開いたら「ショートカットを追加」を押し、ショートカットの「オートメーション」でスイッチをオンにします。
+        「追加」でショートカットが開いたら「ショートカットを追加」を押します。次にショートカットの「オートメーション」一覧で、そのアプリの行の右端のスイッチをオンにします。
         そのアプリの通知が届くと「受け取っています」になります。
+        <AutomationListHint />
       </div>
 
       {error && (
