@@ -36,6 +36,8 @@ export interface FullState {
   mode: string;
   persona: string;
   voice: string;
+  /** アプリごとの声 (app_id → 声ID)。無いアプリは voice を使う */
+  app_voices: Record<string, string>;
   onboarded: boolean;
 }
 

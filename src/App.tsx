@@ -92,6 +92,7 @@ function App() {
               state={state}
               appId={view.appId}
               platform={platform}
+              edition={edition}
               speaking={speaking}
               onBack={() => setView({ name: "home" })}
               onPreviewApp={(id) =>

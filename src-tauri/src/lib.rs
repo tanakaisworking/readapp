@@ -17,7 +17,7 @@ use crate::transform::Mode;
 
 /// アプリ別の読み上げ設定。JSONで永続化する (M5)。
 /// 考え方は「キャラを決める→対象アプリを決める」。
-/// persona/voice/mode はキャラ側の持ち物で全体共有、アプリ側はON/OFFだけ。
+/// persona/voice/mode はキャラ側の持ち物で全体共有。アプリ側はON/OFFと、声の上書き (任意)。
 pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
     /// すべて読み上げモード。ONなら個別設定に関わらず読む。
@@ -27,6 +27,8 @@ pub struct AppSettings {
     mode: Mutex<String>,
     persona: Mutex<String>,
     voice: Mutex<String>,
+    /// アプリごとの声 (app_id → 声ID)。無いアプリは全体の声を使う。
+    app_voices: Mutex<HashMap<String, String>>,
     onboarded: Mutex<bool>,
     data_file: Mutex<Option<PathBuf>>,
     /// macOS変換ヘルパーのパス。無ければ素文フォールバック (実行時のみ)。
@@ -74,6 +76,8 @@ struct SavedSettings {
     #[serde(default = "default_voice_id")]
     voice: String,
     #[serde(default)]
+    app_voices: HashMap<String, String>,
+    #[serde(default)]
     onboarded: bool,
 }
 
@@ -98,6 +102,7 @@ impl Default for AppSettings {
             mode: Mutex::new(persona_mode_default()),
             persona: Mutex::new(default_persona_id()),
             voice: Mutex::new(default_voice_id()),
+            app_voices: Mutex::new(HashMap::new()),
             onboarded: Mutex::new(false),
             data_file: Mutex::new(None),
             helper_path: Mutex::new(None),
@@ -123,6 +128,15 @@ impl AppSettings {
             .lock()
             .map(|p| p.clone())
             .unwrap_or_else(|_| default_persona_id())
+    }
+
+    /// そのアプリで使う声。アプリごとの声があればそれ、無ければ全体の声。
+    pub fn voice_for(&self, app_id: &str) -> String {
+        self.app_voices
+            .lock()
+            .ok()
+            .and_then(|m| m.get(app_id).cloned())
+            .unwrap_or_else(|| self.voice())
     }
 
     pub fn voice(&self) -> String {
@@ -203,6 +217,7 @@ impl AppSettings {
             mode: self.mode.lock().map(|m| m.clone()).unwrap_or_else(|_| persona_mode_default()),
             persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
             voice: self.voice.lock().map(|v| v.clone()).unwrap_or_else(|_| default_voice_id()),
+            app_voices: self.app_voices.lock().map(|m| m.clone()).unwrap_or_default(),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
         }
     }
@@ -243,6 +258,9 @@ impl AppSettings {
                     }
                     if let Ok(mut vv) = self.voice.lock() {
                         *vv = saved.voice;
+                    }
+                    if let Ok(mut m) = self.app_voices.lock() {
+                        *m = saved.app_voices;
                     }
                     if let Ok(mut b) = self.onboarded.lock() {
                         *b = saved.onboarded;
@@ -408,6 +426,33 @@ fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
     state.save();
 }
 
+/// アプリごとの声を設定する。None で解除 (全体の声に戻す)。
+/// 受けるのはOS既定とこのMacにある声だけ (プレミアム声はアプリごとには選べない)。
+#[tauri::command]
+fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: Option<String>) {
+    let app_id = app_id.trim().to_string();
+    if app_id.is_empty() {
+        return;
+    }
+    match voice_id {
+        None => {
+            if let Ok(mut m) = state.app_voices.lock() {
+                m.remove(&app_id);
+            }
+        }
+        Some(v) => {
+            let known = v == "system" || speech::system::list_voices().iter().any(|sv| sv.id == v);
+            if !known {
+                return;
+            }
+            if let Ok(mut m) = state.app_voices.lock() {
+                m.insert(app_id, v);
+            }
+        }
+    }
+    state.save();
+}
+
 #[derive(Serialize)]
 struct FullState {
     enabled: HashMap<String, bool>,
@@ -416,6 +461,7 @@ struct FullState {
     mode: String,
     persona: String,
     voice: String,
+    app_voices: HashMap<String, String>,
     onboarded: bool,
 }
 
@@ -429,6 +475,7 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
         mode: s.mode,
         persona: s.persona,
         voice: s.voice,
+        app_voices: s.app_voices,
         onboarded: s.onboarded,
     }
 }
@@ -966,7 +1013,7 @@ fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> O
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    speech::system::speak(&text, &settings.voice());
+    speech::system::speak(&text, &settings.voice_for(app_id));
     Some(text)
 }
 
@@ -1145,6 +1192,7 @@ pub fn run() {
             get_personas,
             set_persona,
             set_voice,
+            set_app_voice,
             set_onboarded,
             windows_ensure_access,
             test_speak
@@ -1276,6 +1324,35 @@ mod tests {
             }
             assert_eq!(app_automation_name("chatgpt", 1), "readapp通知-chatgpt-2");
         }
+    }
+
+    #[test]
+    fn app_voice_overrides_global_voice() {
+        let settings = AppSettings::default();
+        *settings.voice.lock().unwrap() = "system:Kyoko".to_string();
+        settings
+            .app_voices
+            .lock()
+            .unwrap()
+            .insert("slack".to_string(), "system:Otoya".to_string());
+        assert_eq!(settings.voice_for("slack"), "system:Otoya");
+        assert_eq!(settings.voice_for("discord"), "system:Kyoko");
+    }
+
+    #[test]
+    fn app_voices_round_trip_through_json() {
+        let settings = AppSettings::default();
+        settings
+            .app_voices
+            .lock()
+            .unwrap()
+            .insert("slack".to_string(), "system:Otoya".to_string());
+        let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        let back: SavedSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.app_voices.get("slack").map(String::as_str), Some("system:Otoya"));
+        // 旧形式 (app_voicesなし) も読める
+        let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
+        assert!(old.app_voices.is_empty());
     }
 
     #[test]

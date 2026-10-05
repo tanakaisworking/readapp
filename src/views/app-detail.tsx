@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
+import { Check, CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
@@ -7,18 +7,20 @@ import { Switch } from "@/components/ui/switch";
 import { knownApp } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
+import { cn } from "@/lib/utils";
 
 interface Props {
   api: SettingsApi;
   state: FullState;
   appId: string;
   platform: string;
+  edition: string;
   speaking: boolean;
   onBack: () => void;
   onPreviewApp: (appId: string) => void;
 }
 
-export function AppDetail({ api, state, appId, platform, speaking, onBack, onPreviewApp }: Props) {
+export function AppDetail({ api, state, appId, platform, edition, speaking, onBack, onPreviewApp }: Props) {
   const app = knownApp(appId);
   const appName = state.names[appId] ?? app.name;
   const on = isOn(state, appId);
@@ -28,6 +30,18 @@ export function AppDetail({ api, state, appId, platform, speaking, onBack, onPre
   const [checking, setChecking] = useState(false);
   const [axOn, setAxOn] = useState(false);
   const busy = useRef(false);
+  const [systemVoices, setSystemVoices] = useState<{ id: string; name: string }[]>([]);
+  const appVoice = state.app_voices[appId] ?? null;
+
+  useEffect(() => {
+    invoke<{ id: string; name: string }[]>("get_system_voices").then(setSystemVoices).catch(() => {});
+  }, []);
+
+  // 声を選んだらすぐ、その声で試しに喋る
+  const pickVoice = async (voiceId: string | null) => {
+    await api.setAppVoice(appId, voiceId);
+    onPreviewApp(appId);
+  };
 
   useEffect(() => {
     invoke<boolean>("shortcut_installed", { appId }).then(setInstalled).catch(() => setInstalled(false));
@@ -130,7 +144,39 @@ export function AppDetail({ api, state, appId, platform, speaking, onBack, onPre
             試しに喋る
           </Button>
 
-          {platform === "macos" && !axOn && (
+          <section aria-label="このアプリの声" className="mt-5">
+            <h2 className="text-xs font-medium text-muted-foreground">このアプリの声</h2>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {appName}の通知だけ、別の声で読み上げられます。
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {[{ id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" }, ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" }))].map((v) => {
+                const selected = appVoice === v.id;
+                return (
+                  <li key={v.id ?? "default"}>
+                    <button
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => void pickVoice(v.id)}
+                      disabled={speaking}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-lg bg-card px-3.5 py-2.5 text-left outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-60 shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
+                        selected && "ring-2 ring-primary/60",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{v.name}</span>
+                        {v.note && <span className="block text-xs text-muted-foreground">{v.note}</span>}
+                      </span>
+                      {selected && <Check className="h-4 w-4 text-primary" aria-hidden="true" />}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+
+          {platform === "macos" && edition !== "mas" && !axOn && (
             <section aria-label="ショートカット" className="mt-4">
               <h2 className="text-xs font-medium text-muted-foreground">ショートカット</h2>
               <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">

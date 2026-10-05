@@ -47,6 +47,18 @@ export function useSettings() {
     setState((s) => (s ? { ...s, voice: v } : s));
   }, []);
 
+  /** アプリごとの声。null で解除 (いつもの声に戻す) */
+  const setAppVoice = useCallback(async (appId: string, voiceId: string | null) => {
+    await invoke("set_app_voice", { appId, voiceId });
+    setState((s) => {
+      if (!s) return s;
+      const app_voices = { ...s.app_voices };
+      if (voiceId) app_voices[appId] = voiceId;
+      else delete app_voices[appId];
+      return { ...s, app_voices };
+    });
+  }, []);
+
   const setOnboarded = useCallback(async (done: boolean) => {
     await invoke("set_onboarded", { done });
     setState((s) => (s ? { ...s, onboarded: done } : s));
@@ -69,6 +81,7 @@ export function useSettings() {
     setMode,
     setPersona,
     setVoice,
+    setAppVoice,
     setOnboarded,
     speak,
   };

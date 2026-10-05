@@ -37,6 +37,10 @@ pub fn list_voices() -> Vec<SystemVoice> {
                 if !locale.starts_with("ja") {
                     continue;
                 }
+                // 同じ名前の声が複数入っていることがある (例: Kyoko)。sayでは名前でしか選べないので1つにまとめる
+                if voices.iter().any(|v: &SystemVoice| v.name == name) {
+                    continue;
+                }
                 voices.push(SystemVoice {
                     id: format!("system:{name}"),
                     name: name.to_string(),

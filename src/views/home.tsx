@@ -47,6 +47,13 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
   const onCount = KNOWN_APPS.filter((a) => isOn(state, a.id)).length;
   // readapp自身 (試しに喋る・設定確認の通知) は常に読むので、ON/OFFの対象として出さない
   const SELF = "readapp";
+  /** アプリごとの声を変えている時、その声の名前 */
+  const voiceNameOf = (id: string): string | null => {
+    const v = state.app_voices[id];
+    if (!v) return null;
+    if (v === "system") return "システム音声";
+    return systemVoices.find((sv) => sv.id === v)?.name ?? null;
+  };
   const extraIds = Object.keys(state.enabled).filter((id) => id !== SELF && !KNOWN_APPS.some((a) => a.id === id));
   const newcomers = observed.filter(
     (o) => o.id !== SELF && !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
@@ -182,7 +189,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
             {lastText && <span className="text-xs text-muted-foreground">{lastText}</span>}
           </div>
           <div className="mt-2">
-            <MasAppList />
+            <MasAppList onOpenApp={onOpenApp} voiceNameOf={voiceNameOf} />
           </div>
         </section>
       )}
@@ -325,6 +332,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
                   <span className="block truncate text-sm font-medium">{displayOf(app.id)}</span>
                   <span className="block truncate text-xs text-muted-foreground">
                     {isOn(state, app.id) ? "読み上げます" : "おやすみ中"}
+                    {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
                   </span>
                 </span>
                 <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>

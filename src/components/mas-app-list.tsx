@@ -63,7 +63,14 @@ function nextState(
   return next;
 }
 
-export function MasAppList() {
+interface Props {
+  /** アプリの詳細 (声の設定など) を開く */
+  onOpenApp: (id: string) => void;
+  /** アプリごとの声を変えている時、その声の名前 */
+  voiceNameOf: (id: string) => string | null;
+}
+
+export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
   const [apps, setApps] = useState<MasApp[] | null>(null);
   const [setup, setSetup] = useState<SetupState>(loadState);
   // 次の状態を同期的に計算するための写し (押下時刻を確実に1回だけ使うため)
@@ -146,13 +153,19 @@ export function MasAppList() {
                 >
                   {app.name.slice(0, 1)}
                 </span>
-                <span className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => onOpenApp(app.id)}
+                  aria-label={`${app.name}の設定を開く`}
+                  className="min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                >
                   <span className="block truncate text-sm font-medium">{app.name}</span>
                   <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
                     {ok && <Check className="h-3 w-3 text-emerald-500" strokeWidth={3} aria-hidden="true" />}
                     {status}
+                    {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
                   </span>
-                </span>
+                </button>
                 {!app.added ? (
                   <Button
                     size="sm"
