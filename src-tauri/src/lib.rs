@@ -38,7 +38,7 @@ pub struct AppSettings {
     /// イベント送信用 (setup時に設定)。
     app_handle: Mutex<Option<tauri::AppHandle>>,
     /// 最近読んだ通知 (重複防止用。実行時のみ)。
-    recent_spoken: Mutex<Vec<(String, std::time::Instant)>>,
+    recent_spoken: Mutex<Vec<(String, Route, std::time::Instant)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -689,26 +689,38 @@ pub(crate) fn speak_notification(
     app_id: &str,
     title: &str,
     body: &str,
+    route: Route,
 ) -> Option<String> {
     if !should_speak(settings, app_id) {
         return None;
     }
-    if !fresh_notification(settings, &format!("{title}\n{body}")) {
+    if !fresh_notification(settings, &format!("{title}\n{body}"), route) {
         return None;
     }
     speak_now(settings, app_id, title, body)
 }
 
-/// 同じ通知を複数の経路 (直接監視とショートカットの部品) で受けた時に1回だけ読むための窓。
-const DUPLICATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// 経路ごとの区切り (「。」「改行」等) の差を無視して比べる。
-fn notification_key(text: &str) -> String {
-    text.chars().filter(|c| c.is_alphanumeric()).collect()
+/// 通知の届き方。同じ通知が別の経路から重ねて届く時だけ1回にまとめる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// OSから直接 (macOSの直接監視・WindowsのUserNotificationListener)
+    Direct,
+    /// ショートカット経由 (URLスキーム・部品「readappで読み上げる」)
+    Shortcut,
 }
 
-/// 未読なら true (かつ既読化する)。窓内に同じ通知を読んでいれば false。
-fn fresh_notification(settings: &AppSettings, text: &str) -> bool {
+/// 直接監視とショートカットの両方で同じ通知を受けた時に1回だけ読むための窓。
+const DUPLICATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 経路ごとの区切りの差 (直接監視は「タイトル。本文」、部品は「タイトル\n本文」) だけを無視する。
+/// 本文中の記号 (小数点など) は意味が変わるので残す。
+fn notification_key(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace() && *c != '。').collect()
+}
+
+/// 未読なら true (かつ既読化する)。窓内に「別の経路で」同じ通知を読んでいれば false。
+/// 同じ経路で同じ文が続くのは別の通知なので読む。
+fn fresh_notification(settings: &AppSettings, text: &str, route: Route) -> bool {
     let key = notification_key(text);
     if key.is_empty() {
         return true;
@@ -717,11 +729,13 @@ fn fresh_notification(settings: &AppSettings, text: &str) -> bool {
     let Ok(mut recent) = settings.recent_spoken.lock() else {
         return true;
     };
-    recent.retain(|(_, at)| now.duration_since(*at) < DUPLICATE_WINDOW);
-    if recent.iter().any(|(k, _)| *k == key) {
+    recent.retain(|(_, _, at)| now.duration_since(*at) < DUPLICATE_WINDOW);
+    if let Some(i) = recent.iter().position(|(k, r, _)| *k == key && *r != route) {
+        // 対になる受信を消費する (3回目以降の同文は改めて判定する)
+        recent.remove(i);
         return false;
     }
-    recent.push((key, now));
+    recent.push((key, route, now));
     true
 }
 
@@ -814,14 +828,14 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
         match intent_target(&app) {
             IntentTarget::Always => {
                 record_received(&settings, INTENT_APP_ID, "", &text);
-                if fresh_notification(&settings, &text) {
+                if fresh_notification(&settings, &text, Route::Shortcut) {
                     speak_now(&settings, INTENT_APP_ID, "", &text);
                 }
             }
             IntentTarget::App { id, name } => {
                 settings.observe_named(&id, &name);
                 record_received(&settings, &id, "", &text);
-                speak_notification(&settings, &id, "", &text);
+                speak_notification(&settings, &id, "", &text, Route::Shortcut);
             }
         }
     });
@@ -832,7 +846,7 @@ fn handle_notify_url(settings: &AppSettings, url: &url::Url) {
     if let Some(n) = notifications::macos::parse_notify_url(url) {
         settings.observe(&n.app_id);
         record_received(settings, &n.app_id, &n.title, &n.body);
-        speak_notification(settings, &n.app_id, &n.title, &n.body);
+        speak_notification(settings, &n.app_id, &n.title, &n.body, Route::Shortcut);
     }
 }
 
@@ -918,8 +932,6 @@ pub fn run() {
             handle
                 .state::<AppSettings>()
                 .set_app_handle(handle.clone());
-            // ショートカットの部品からの呼び出しを受け付け始める
-            let _ = APP_HANDLE.set(handle.clone());
             // 保存済み設定の読み込み (M5)。無ければ既定値のまま。
             {
                 let settings = handle.state::<AppSettings>();
@@ -955,6 +967,9 @@ pub fn run() {
                     settings.set_helper_path(Some(p));
                 }
             }
+            // ショートカットの部品からの呼び出しを受け付け始める。
+            // 保存設定とヘルパーの準備が済んでから公開する (起動直後の呼び出しが既定値で読まないように)。
+            let _ = APP_HANDLE.set(handle.clone());
             // 起動時URL (cold start: アプリ停止中にURLで開かれた場合)
             if let Ok(Some(urls)) = handle.deep_link().get_current() {
                 let settings = handle.state::<AppSettings>();
@@ -1016,7 +1031,7 @@ mod tests {
     #[test]
     fn invisible_only_notification_is_silent() {
         let settings = AppSettings::default();
-        assert!(speak_notification(&settings, "x", "\u{200b}", "").is_none());
+        assert!(speak_notification(&settings, "x", "\u{200b}", "", Route::Direct).is_none());
     }
 
     #[test]
@@ -1100,9 +1115,23 @@ mod tests {
     fn same_notification_from_two_routes_is_fresh_once() {
         let settings = AppSettings::default();
         // 直接監視は「タイトル。本文」、部品は「タイトル\n本文」で届く
-        assert!(fresh_notification(&settings, "会議。15時から"));
-        assert!(!fresh_notification(&settings, "会議\n15時から"));
-        assert!(fresh_notification(&settings, "会議。16時から"));
+        assert!(fresh_notification(&settings, "会議。15時から", Route::Direct));
+        assert!(!fresh_notification(&settings, "会議\n15時から", Route::Shortcut));
+        assert!(fresh_notification(&settings, "会議。16時から", Route::Direct));
+    }
+
+    #[test]
+    fn same_text_on_same_route_is_another_notification() {
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, "了解。", Route::Direct));
+        assert!(fresh_notification(&settings, "了解。", Route::Direct));
+    }
+
+    #[test]
+    fn duplicate_key_keeps_meaningful_symbols() {
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, "予算1.5万円", Route::Direct));
+        assert!(fresh_notification(&settings, "予算15万円", Route::Shortcut));
     }
 
     #[test]
@@ -1116,7 +1145,8 @@ mod tests {
             intent_target("Slack"),
             IntentTarget::App { id: "slack".into(), name: "Slack".into() }
         );
-        // ショートカットの変数は分解形で届くことがある
+        // ショートカットの変数は分解形で届くことがある (正規化はmacOSのみ)
+        #[cfg(target_os = "macos")]
         assert_eq!(
             intent_target("カレンタ\u{3099}ー"),
             IntentTarget::App { id: "calendar".into(), name: "カレンダー".into() }

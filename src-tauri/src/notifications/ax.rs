@@ -321,7 +321,7 @@ fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
                 format!("{}。{}", b.title, b.subtitle)
             };
             crate::record_received(&settings, &app_id, &title, &b.body);
-            speak_notification(&settings, &app_id, &title, &b.body);
+            speak_notification(&settings, &app_id, &title, &b.body, crate::Route::Direct);
         }
     });
     tx

@@ -39,8 +39,14 @@ fn build_app_intents() {
     std::fs::create_dir_all(&out).unwrap();
     let sdk = xcrun(&["--show-sdk-path"]).expect("macOS SDK not found (xcode-select)");
     let swiftc = xcrun(&["--find", "swiftc"]).expect("swiftc not found");
-    // 最低対応OSはtauri.conf.json (bundle.macOS.minimumSystemVersion) と揃える
-    let target = "arm64-apple-macos15.0";
+    // CPUはRustのビルド対象に合わせる (Intel/Universalのx86_64側にも部品を入れる)。
+    // 最低対応OSはtauri.conf.json (bundle.macOS.minimumSystemVersion) と揃える。
+    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x86_64",
+        _ => "arm64",
+    };
+    let target_string = format!("{arch}-apple-macos15.0");
+    let target = target_string.as_str();
     let lib = out.join("libReadappIntents.a");
 
     let status = Command::new(&swiftc)

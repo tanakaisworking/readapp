@@ -131,7 +131,7 @@ pub fn start_listener(handle: AppHandle) {
             }
             let settings = moved.state::<AppSettings>();
             settings.observe_named(&parsed.app_id, &parsed.app_name);
-            speak_notification(&settings, &parsed.app_id, &parsed.title, &parsed.body);
+            speak_notification(&settings, &parsed.app_id, &parsed.title, &parsed.body, crate::Route::Direct);
             Ok(())
         },
     )) {
@@ -146,7 +146,7 @@ pub fn start_listener(handle: AppHandle) {
                 }
                 let settings = handle.state::<AppSettings>();
                 settings.observe_named(&n.app_id, &n.app_name);
-                speak_notification(&settings, &n.app_id, &n.title, &n.body);
+                speak_notification(&settings, &n.app_id, &n.title, &n.body, crate::Route::Direct);
             }
         }
         Err(e) => eprintln!("[readapp] windows initial fetch failed: {e}"),

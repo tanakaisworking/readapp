@@ -3,6 +3,10 @@
   "identifier": "com.hibachi.readapp",
   "bundle": {
     "targets": ["nsis"],
+    "resources": {
+      "gen/intents/Metadata.appintents/": null,
+      "resources/automation/": null
+    },
     "category": "Utility"
   }
 }
