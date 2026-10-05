@@ -7,8 +7,9 @@ import { cn } from "@/lib/utils";
 
 // MAS版の通知の受け取り設定 (ショートカットの通知オートメーション)。
 // 1. 同梱のひな形を追加する   … 追加済みかは shortcuts list で自動判定
-// 2. 読み上げるアプリを選ぶ   … 編集画面をURLで直接開く。選んだかは判定できないので本人が進める
-// 3. オートメーションをオンにする … 同上 (読み込んだオートメーションは最初オフ)
+// 2. 読み上げるアプリを足す   … 編集画面をURLで直接開く。選んだかは判定できないので本人が進める
+//    (ひな形の通知元には最初から readapp 自身が入っている)
+// 3. オートメーションをオンにする … readappのテスト通知が読み上げられたら完了 (読み込んだオートメーションは最初オフ)
 // 最初の通知が届いたら、途中でも全部できたことにする。
 // 画面の文言・見本は macOS 27 のショートカットで実際に操作して確認したもの (2026-10-06)。
 
@@ -45,6 +46,7 @@ interface Props {
 export function AutomationSetup({ onDoneChange }: Props) {
   const [stage, setStageState] = useState<Stage>(loadStage);
   const [waitingAdd, setWaitingAdd] = useState(false);
+  const [testSent, setTestSent] = useState(false);
   const [received, setReceived] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const startedAt = useRef(Math.floor(Date.now() / 1000));
@@ -68,6 +70,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
     startedAt.current = Math.floor(Date.now() / 1000);
     setReceived(false);
     setWaitingAdd(false);
+    setTestSent(false);
     setStageState(0);
   }, []);
 
@@ -184,7 +187,7 @@ export function AutomationSetup({ onDoneChange }: Props) {
       body: (
         <>
           <p>
-            青い「アプリ」を押して、読み上げたいアプリを選びます。「＋」で増やせます。
+            青い「＋」を押して、読み上げたいアプリを足します。「readapp」は確認用なので、そのまま残してください。
           </p>
           <MockApps />
           <div className="mt-3 flex items-center gap-2">
@@ -205,15 +208,18 @@ export function AutomationSetup({ onDoneChange }: Props) {
       ),
     },
     {
-      title: "オンにする",
-      doneLabel: "オンにしました",
+      title: "オンにして確かめる",
+      doneLabel: "読み上げました",
       body: (
         <>
-          <p>左の「オートメーション」を開き、「{AUTOMATION}」のスイッチをオンにします。</p>
+          <p>
+            左の「オートメーション」で「{AUTOMATION}」のスイッチをオンにします。最後にテスト通知を送り、読み上げられたら完了です。
+          </p>
           <MockToggle />
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
+              variant="outline"
               onClick={() =>
                 void run("open_shortcuts_app", "開けませんでした。Launchpadから「ショートカット」を開いてください。")
               }
@@ -221,10 +227,28 @@ export function AutomationSetup({ onDoneChange }: Props) {
               <ExternalLink />
               開く
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setStage(3)}>
-              オンにした
+            <Button
+              size="sm"
+              onClick={async () => {
+                if (await run("send_test_notification", "テスト通知を送れませんでした。")) setTestSent(true);
+              }}
+            >
+              <Bell />
+              テスト通知
             </Button>
           </div>
+          {testSent && (
+            <p className="mt-2 text-xs" role="status">
+              送りました。初回は右上に「readapp」の通知の許可が出るので「許可」を押してください。続けてテスト通知が届きます。読み上げられない時は、スイッチがオンかを確かめてください。
+              <button
+                type="button"
+                className="ml-1 underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/50"
+                onClick={() => setStage(3)}
+              >
+                確認せずに進む
+              </button>
+            </p>
+          )}
         </>
       ),
     },
@@ -359,13 +383,13 @@ function MockAdd() {
 
 function MockApps() {
   return (
-    <MockFrame label="通知オートメーションの設定。「アプリ」を押して読み上げたいアプリを選ぶ">
+    <MockFrame label="通知オートメーションの設定。readappの横の「＋」を押して読み上げたいアプリを足す">
       <p className="flex flex-wrap items-center gap-1 text-[11px] text-foreground">
         <Bell className="h-3.5 w-3.5 text-rose-500" aria-hidden="true" />
-        <Target>アプリ</Target>
-        <span style={{ color: SHORTCUTS_BLUE }} aria-hidden="true">
-          ＋
+        <span className="font-medium" style={{ color: SHORTCUTS_BLUE }}>
+          readapp
         </span>
+        <Target>＋</Target>
         からの通知を受け取ったとき
       </p>
     </MockFrame>

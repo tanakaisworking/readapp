@@ -295,9 +295,11 @@ fn catalog() -> &'static [CatalogApp] {
 }
 
 /// notification → shouldSpeak() → transform() → speak() の shouldSpeak 部分。
-/// すべて読み上げモードなら全部読む。そうでなければ個別ONのアプリだけ。
-/// 未設定はカタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)。
-fn should_speak(settings: &AppSettings, app_id: &str) -> bool {
+/// すべて読み上げモードなら全部読む。そうでなければ個別の設定に従う。
+/// 未設定の既定:
+/// - 直接届いた通知: カタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)
+/// - ショートカット経由: ON (ユーザーがショートカット側で対象アプリに選んだもの。MAS版はアプリ別ON/OFFを出さない)
+fn should_speak(settings: &AppSettings, app_id: &str, route: Route) -> bool {
     if settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
         return true;
     }
@@ -306,7 +308,7 @@ fn should_speak(settings: &AppSettings, app_id: &str) -> bool {
         .lock()
         .map(|m| m.get(app_id).copied())
         .unwrap_or(None);
-    explicit.unwrap_or_else(|| catalog().iter().any(|a| a.id == app_id))
+    explicit.unwrap_or_else(|| route == Route::Shortcut || catalog().iter().any(|a| a.id == app_id))
 }
 
 /// 読み上げで使うアプリ名。登録名→カタログ名の順。分からなければNone。
@@ -702,6 +704,25 @@ fn open_url(_url: &str) -> Result<(), String> {
     Err("macOS only".to_string())
 }
 
+/// 設定確認用のテスト通知を出す (intents/Intents.swift)。
+/// ひな形の通知元に readapp 自身が入っているので、オートメーションがオンなら読み上げまで一巡する。
+#[tauri::command]
+fn send_test_notification() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn readapp_post_test_notification();
+        }
+        // SAFETY: 引数なし。Swift側は非同期に処理してすぐ返る。
+        unsafe { readapp_post_test_notification() };
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("macOS only".to_string())
+    }
+}
+
 /// ショートカットアプリを開く (MAS版の設定案内用)。
 #[tauri::command]
 fn open_shortcuts_app() -> Result<(), String> {
@@ -737,7 +758,7 @@ pub(crate) fn speak_notification(
     body: &str,
     route: Route,
 ) -> Option<String> {
-    if !should_speak(settings, app_id) {
+    if !should_speak(settings, app_id, route) {
         return None;
     }
     if !fresh_notification(settings, &format!("{title}\n{body}"), route) {
@@ -949,6 +970,7 @@ pub fn run() {
             add_notify_automation,
             notify_automation_installed,
             open_notify_automation,
+            send_test_notification,
             ax_trusted,
             ax_request_access,
             ax_watching,
@@ -1085,23 +1107,32 @@ mod tests {
     #[test]
     fn unlisted_app_is_silent_by_default() {
         let settings = AppSettings::default();
-        assert!(!should_speak(&settings, "dev.test"));
+        assert!(!should_speak(&settings, "dev.test", Route::Direct));
+    }
+
+    #[test]
+    fn shortcut_route_speaks_unlisted_app_unless_turned_off() {
+        let settings = AppSettings::default();
+        // ショートカット側で対象に選ばれたアプリ (例: LINE) は既定で読む
+        assert!(should_speak(&settings, "line", Route::Shortcut));
+        settings.enabled.lock().unwrap().insert("line".to_string(), false);
+        assert!(!should_speak(&settings, "line", Route::Shortcut));
     }
 
     #[test]
     fn catalog_app_speaks_by_default() {
         let settings = AppSettings::default();
-        assert!(should_speak(&settings, "slack"));
-        assert!(should_speak(&settings, "calendar"));
+        assert!(should_speak(&settings, "slack", Route::Direct));
+        assert!(should_speak(&settings, "calendar", Route::Direct));
     }
 
     #[test]
     fn added_app_speaks_and_speak_all_covers_unlisted() {
         let settings = AppSettings::default();
         settings.enabled.lock().unwrap().insert("dev.test".to_string(), true);
-        assert!(should_speak(&settings, "dev.test"));
+        assert!(should_speak(&settings, "dev.test", Route::Direct));
         *settings.speak_all.lock().unwrap() = true;
-        assert!(should_speak(&settings, "other"));
+        assert!(should_speak(&settings, "other", Route::Direct));
     }
 
     #[test]
@@ -1121,7 +1152,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("dev.test".to_string(), false);
-        assert!(!should_speak(&settings, "dev.test"));
+        assert!(!should_speak(&settings, "dev.test", Route::Direct));
     }
 
     #[test]
@@ -1242,9 +1273,9 @@ mod tests {
             .lock()
             .unwrap()
             .insert("slack".to_string(), false);
-        assert!(!should_speak(&settings, "slack"));
+        assert!(!should_speak(&settings, "slack", Route::Direct));
         *settings.speak_all.lock().unwrap() = true;
-        assert!(should_speak(&settings, "slack"));
+        assert!(should_speak(&settings, "slack", Route::Direct));
     }
 
     #[test]
@@ -1262,7 +1293,7 @@ mod tests {
         std::fs::write(&dir, serde_json::to_string(&old).unwrap()).unwrap();
         settings.load(&dir);
         std::fs::remove_file(&dir).ok();
-        assert!(should_speak(&settings, "slack"));
+        assert!(should_speak(&settings, "slack", Route::Direct));
         assert_eq!(settings.persona(), "aoi");
         assert!(settings.onboarded.lock().map(|b| *b).unwrap_or(false));
     }

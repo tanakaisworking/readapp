@@ -55,7 +55,7 @@ for (const app of catalog.apps) {
 }
 
 // MAS版用: 通知オートメーションのひな形 (トリガー＋「readappで読み上げる」＋「通知」変数の接続済み)。
-// 読み込んだ後にユーザーがアプリを選び、オートメーションをオンにすれば使える。
+// 読み込んだ後にユーザーが「＋」で読み上げたいアプリを足し、オートメーションをオンにすれば使える。
 // ショートカットの名前はファイル名になる。macOSのファイル名は濁点が分解形になり、
 // 名前で探す時 (shortcuts list / shortcuts://open-shortcut) に一致しなくなるため、濁点・半濁点を含めない。
 const automationDir = join(root, "src-tauri/resources/automation");
@@ -66,22 +66,23 @@ const automation = {
   WFWorkflowIcon: { WFWorkflowIconStartColor: 4274264319, WFWorkflowIconGlyphNumber: 59446 },
   WFWorkflowTypes: [],
   WFWorkflowInputContentItemClasses: ["WFStringContentItem"],
-  // 対象アプリは空にしておく (ショートカット側で「アプリを構成してください」と案内される)
+  // 通知元には最初から readapp 自身を入れておく。readappのテスト通知で、設定が一巡するかを確かめられる。
   WFWorkflowTriggers: [
-    { WFTriggerIdentifier: "WFNotificationTrigger", WFTriggerUUID: randomUUID().toUpperCase(), WFTriggerSerializedParameters: {} },
+    {
+      WFTriggerIdentifier: "WFNotificationTrigger",
+      WFTriggerUUID: randomUUID().toUpperCase(),
+      WFTriggerSerializedParameters: {
+        SelectedApps: { BundleIdentifier: "com.hibachi.readapp", Name: "readapp", TeamIdentifier: "TYX92DB6TA" },
+      },
+    },
   ],
   WFWorkflowActions: [
     {
       WFWorkflowActionIdentifier: "com.hibachi.readapp.SpeakIntent",
       WFWorkflowActionParameters: {
-        // 「通知」変数 (トリガーの出力) をテキストにつなぐ
-        text: {
-          Value: {
-            attachmentsByRange: { "{0, 1}": { Type: "TriggerOutput", TriggerIdentifier: "WFNotificationTrigger" } },
-            string: "\ufffc",
-          },
-          WFSerializationType: "WFTextTokenString",
-        },
+        // 「通知」変数 (トリガーの出力) をテキストに、その「アプリ」をアプリ名につなぐ
+        text: notificationVariable(),
+        appName: notificationVariable("App"),
         AppIntentDescriptor: {
           BundleIdentifier: "com.hibachi.readapp",
           Name: "readapp",
@@ -99,6 +100,19 @@ writeFileSync(automationJson, JSON.stringify(automation));
 execFileSync("plutil", ["-convert", "binary1", "-o", automationUnsigned, automationJson]);
 unlinkSync(automationJson);
 signShortcut(automationUnsigned, join(automationDir, "readapp通知.shortcut"));
+
+/// トリガー「通知」の出力を差し込む変数。property を渡すとその項目だけ (例: "App")。
+/// 形式は macOS 27 のショートカットで実際に設定して保存されたものと同じ。
+function notificationVariable(property) {
+  const attachment = { Type: "TriggerOutput", TriggerIdentifier: "WFNotificationTrigger" };
+  if (property) {
+    attachment.Aggrandizements = [{ Type: "WFPropertyVariableAggrandizement", PropertyName: property }];
+  }
+  return {
+    Value: { attachmentsByRange: { "{0, 1}": attachment }, string: "\ufffc" },
+    WFSerializationType: "WFTextTokenString",
+  };
+}
 
 /// 未署名ファイルは取り込めないため、その場で署名する (要Apple IDサインイン)。
 /// Apple側の500エラーが出ることがあるため3回まで再試行する。
