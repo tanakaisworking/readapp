@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 
 // オートメーションのスイッチは、ショートカットの「オートメーション」一覧にしかない (編集画面では切り替えられない)。
 // 一覧を直接開くURLは無く、サンドボックスからキー操作も送れないため、
-// ショートカットを前面に出し、一覧へ切り替えるキー (表示 > オートメーション = ⌥⇧⌘A) を案内する。
-// キーは macOS 27.0.1 のショートカットのメニューで確認 (2026-10-06)。
+// ショートカットを前面に出し、一覧へ切り替えるキーを案内する。
+// 編集画面が前面だと「表示 > オートメーション」(⌥⇧⌘A) は無効なので、先に「ウインドウ > ライブラリ」(⌘0) でメインの画面へ戻す。
+// キーと有効・無効は macOS 27.0.1 のショートカットで確認 (2026-10-06)。
 
 function Kbd({ children }: { children: string }) {
   return (
@@ -33,8 +34,14 @@ export function AutomationListHint() {
           <ExternalLink />
           ショートカットを開く
         </Button>
-        <span className="inline-flex items-center gap-1" aria-label="開いたら option shift command A でオートメーション一覧へ">
+        <span
+          className="inline-flex flex-wrap items-center gap-1"
+          aria-label="開いたら command 0 を押してから option shift command A でオートメーション一覧へ"
+        >
           開いたら
+          <Kbd>⌘</Kbd>
+          <Kbd>0</Kbd>
+          →
           <Kbd>⌥</Kbd>
           <Kbd>⇧</Kbd>
           <Kbd>⌘</Kbd>
@@ -43,7 +50,7 @@ export function AutomationListHint() {
         </span>
       </div>
       <p className="mt-1.5">
-        編集画面ではオンにできません。メニューの「表示」→「オートメーション」でも一覧を開けます。
+        編集画面ではオンにできません。⌘0 でメインの画面に戻り、⌥⇧⌘A（メニューの「表示」→「オートメーション」）で一覧を開きます。
       </p>
       {failed && (
         <p className="mt-1" role="alert">
