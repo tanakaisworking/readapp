@@ -65,6 +65,8 @@ function nextState(
 export function MasAppList() {
   const [apps, setApps] = useState<MasApp[] | null>(null);
   const [setup, setSetup] = useState<SetupState>(loadState);
+  // 次の状態を同期的に計算するための写し (押下時刻を確実に1回だけ使うため)
+  const setupRef = useRef(setup);
   const [error, setError] = useState<string | null>(null);
   const addStartedAt = useRef<Record<string, number>>({});
 
@@ -77,11 +79,15 @@ export function MasAppList() {
     setApps(list);
     const receivedAt: Record<string, number> = {};
     for (const o of observed) if (o.at != null) receivedAt[o.id] = o.at;
-    setSetup((cur) => {
-      const next = nextState(cur, list, receivedAt, addStartedAt.current);
-      if (JSON.stringify(next) !== JSON.stringify(cur)) saveState(next);
-      return next;
-    });
+    const cur = setupRef.current;
+    const next = nextState(cur, list, receivedAt, addStartedAt.current);
+    // 押下時刻は、その追加を検出した時点で使い切る (削除後の再追加で古い時刻を使わない)
+    for (const app of list) if (app.added) delete addStartedAt.current[app.id];
+    if (JSON.stringify(next) !== JSON.stringify(cur)) {
+      saveState(next);
+      setupRef.current = next;
+      setSetup(next);
+    }
   }, []);
 
   // ショートカットから戻った時と、通知元が増えた時、念のため数秒ごとに更新する

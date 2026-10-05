@@ -918,10 +918,11 @@ fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: R
         return true;
     };
     recent.retain(|r| now.duration_since(r.at) < DUPLICATE_WINDOW);
+    // 通知元が分からない受信 (汎用オートメーションで通知の「アプリ」が空) は、どのアプリとも同じとみなす
+    let same_app = |other: &str| other == app_id || other == INTENT_APP_ID || app_id == INTENT_APP_ID;
     if let Some(i) = recent.iter().position(|r| {
         r.key == key
-            && (r.route != route
-                || (r.app_id == app_id && now.duration_since(r.at) < SAME_ROUTE_WINDOW))
+            && (r.route != route || (same_app(&r.app_id) && now.duration_since(r.at) < SAME_ROUTE_WINDOW))
     }) {
         // 対になる受信を消費する (3回目以降の同文は改めて判定する)
         recent.remove(i);
@@ -1349,6 +1350,14 @@ mod tests {
         // 汎用とアプリ別のオートメーションが同じ通知で同時に動いた場合
         let settings = AppSettings::default();
         assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+        assert!(!fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+    }
+
+    #[test]
+    fn unknown_source_and_app_at_once_is_one_notification() {
+        // 汎用 (アプリ名が空 → shortcut) とアプリ別 (slack) が同じ通知で同時に動いた場合
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, INTENT_APP_ID, "了解。", Route::Shortcut));
         assert!(!fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
     }
 
