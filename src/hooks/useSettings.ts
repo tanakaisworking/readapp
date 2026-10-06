@@ -59,9 +59,10 @@ export function useSettings() {
     });
   }, []);
 
+  // 先に表示を変えてから保存する。保存の応答を待って変えると、続けて動かした時に古い応答で値が巻き戻る
   const setVolume = useCallback(async (v: number) => {
-    await invoke("set_volume", { volume: v });
     setState((s) => (s ? { ...s, volume: v } : s));
+    await invoke("set_volume", { volume: v });
   }, []);
 
   const setOnboarded = useCallback(async (done: boolean) => {
