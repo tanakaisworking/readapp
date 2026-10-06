@@ -279,6 +279,7 @@ impl AppSettings {
                     }
                     if let Ok(mut v) = self.volume.lock() {
                         *v = saved.volume.min(speech::system::MAX_VOLUME);
+                        speech::system::set_volume(*v);
                     }
                     if let Ok(mut b) = self.onboarded.lock() {
                         *b = saved.onboarded;
@@ -449,6 +450,7 @@ fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
 fn set_volume(state: State<'_, AppSettings>, volume: u8) {
     if let Ok(mut v) = state.volume.lock() {
         *v = volume.min(speech::system::MAX_VOLUME);
+        speech::system::set_volume(*v);
     }
     state.save();
 }
@@ -1042,7 +1044,7 @@ fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> O
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    speech::system::speak(&text, &settings.voice_for(app_id), settings.volume());
+    speech::system::speak(&text, &settings.voice_for(app_id));
     Some(text)
 }
 
@@ -1228,6 +1230,8 @@ pub fn run() {
             test_speak
         ])
         .setup(|app| {
+            // 音量を下げた時の書き出しファイルが前回の異常終了で残っていれば消す (通知本文の音声のため)
+            std::thread::spawn(speech::system::remove_leftover_files);
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             // イベント送信用ハンドルを保持 (observed-changed等)

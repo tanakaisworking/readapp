@@ -8,6 +8,7 @@
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, OnceLock};
 
 /// OS標準の声。id "system" はOS既定の声、`system:<名前>` は指名。
@@ -90,35 +91,42 @@ pub fn list_voices() -> Vec<SystemVoice> {
 /// 音量の上限 (%)。これ未満の時だけ音量を付けて再生する。
 pub const MAX_VOLUME: u8 = 100;
 
-fn queue() -> &'static mpsc::Sender<(String, String, u8)> {
-    static TX: OnceLock<mpsc::Sender<(String, String, u8)>> = OnceLock::new();
+/// 今の音量 (0〜100 %)。キューに溜まった分も読み始める時の値を使う (途中で消音にしたら残りも読まない)。
+static VOLUME: AtomicU8 = AtomicU8::new(MAX_VOLUME);
+
+pub fn set_volume(volume: u8) {
+    VOLUME.store(volume.min(MAX_VOLUME), Ordering::Relaxed);
+}
+
+fn queue() -> &'static mpsc::Sender<(String, String)> {
+    static TX: OnceLock<mpsc::Sender<(String, String)>> = OnceLock::new();
     TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(String, String, u8)>();
+        let (tx, rx) = mpsc::channel::<(String, String)>();
         std::thread::spawn(move || {
-            remove_leftover_files();
-            for (text, voice, volume) in rx {
-                speak_once(&text, &voice, volume);
+            for (text, voice) in rx {
+                let volume = VOLUME.load(Ordering::Relaxed);
+                if volume > 0 {
+                    speak_once(&text, &voice, volume);
+                }
             }
         });
         tx
     })
 }
 
-/// 読み上げ要求をキューへ。呼び出し元は待たない。空文字と音量0は捨てる。
-/// volume は 0〜100 (%)。
-pub fn speak(text: &str, voice: &str, volume: u8) {
-    if text.is_empty() || volume == 0 {
+/// 読み上げ要求をキューへ。呼び出し元は待たない。空文字と消音中は捨てる。
+pub fn speak(text: &str, voice: &str) {
+    if text.is_empty() || VOLUME.load(Ordering::Relaxed) == 0 {
         return;
     }
-    queue()
-        .send((text.to_string(), voice.to_string(), volume.min(MAX_VOLUME)))
-        .ok();
+    queue().send((text.to_string(), voice.to_string())).ok();
 }
 
 /// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。
 const SPEECH_FILE_PREFIX: &str = "readapp-speech-";
 
-fn remove_leftover_files() {
+/// 起動時に呼ぶ。
+pub fn remove_leftover_files() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
     };
