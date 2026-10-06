@@ -106,7 +106,42 @@ OS差分はRust側のnotifications/とtransform/に閉じ込める。フロン�
 5. TTS読み上げ（OS標準音声）
 6. 最小の設定UI（shadcn/ui）
 
-Premium音声、課金、BYOK、クラウド同期はMVP後。構造上の置き場所は決めておくが、実装はしない。
+ホーム先頭の「読み上げ」をオフにすると、再生中の音声を即時停止し、待機中・変換中の読み上げも破棄する。再びオンにしても停止前の通知は再生しない。音量を0にした場合も同じ停止処理を行う。全体のオン・オフは保存され、アプリ再起動後も維持する。通話中の自動停止は未実装。
+
+macOS通常版・MAS版はメニューバーに常駐する。メニュー先頭から読み上げを停止・再開でき、「設定を開く…」でウィンドウを表示する。ウィンドウを閉じても常駐は続き、メニューの「終了」でアプリを終了する。初回のオンボーディングは表示し、設定完了後は次の起動からウィンドウを出さない。設定画面は必要になるまで生成せず、通知・AppIntent・再オープンからの起動では作業中アプリのフォーカスを奪わない。Finderから再オープンした場合も設定はメニューバーから開く。Windowsのウィンドウ動作は従来どおり。
+
+Gemini 3.8 Flash TTSの本人向け試用接続を実装。クラウドの声を選ぶと、読み上げる文章をCloudflare Worker経由でGoogleへ送信し、返されたWAVを再生する。端末セッションはlogin Keychain、GoogleキーはWorker Secretに保存する。停止・消音はHTTP取得と音声再生の両方を中止し、失敗時は画面へ理由を出してOS音声へ切り替える。音声一時ファイルは0600で作り、再生・キャンセル後に削除する。バックエンドは別の非公開ローカルrepo `../readapp-premium-api` に置く。1回1000文字、JST日次5000文字、1分10件。
+
+Mac通常配布版・MAS版ではGeminiのBYOKにも対応。「声を変更」でユーザー自身のAPIキーを登録し、Kore / Aoede / Puck / Charonを選ぶ。キーはアプリ自身のlogin Keychain項目に保存し、設定JSON・取得IPC・ログ・コマンド引数へ出さない。`gemini:` の声はGoogleへ直接接続し、`cloud:` の本人向けWorker接続とは別経路。API料金と上限はユーザーのGoogleプロジェクトに紐づく。APIキーの更新・削除は取得中・再生中・変換待ちの要求を取り消す。キー削除やAPIエラー時はOS音声に切り替え、Workerへ自動転送しない。アプリごとの声の上書きにも対応。WindowsのBYOK用秘匿ストアは未対応。
+
+クラウド音声の使用上限・キー/接続・課金の失敗は、ホームのお知らせと声の設定に表示する。お知らせを閉じても実行中は状態を保持し、同じ接続先での成功やBYOKキーの更新・削除で解除する。同じ失敗を繰り返し通知せず、システム音声への変更とGoogle AI Studioでの利用状況確認を案内する。上限の回数や解除時刻は推測して表示しない。
+
+サブスク販売、会員ログイン、複数端末管理、クラウド同期は未実装。端末接続は署名済みバイナリの `--provision-cloud-token` が生成し、出力されるハッシュだけをWorkerの `DEVICE_TOKEN_SHA256` に登録する。Googleキーと端末トークンをソースやバンドルへ入れない。
+
+## 読み上げログ（PostHog）
+
+通常配布版・MAS版はRustの読み上げワーカーから `readapp_speech` を送信する。
+対象はHIBACHIの既存Default project（405771 / US Cloud）、`product = readapp` で他アプリと区別する。
+[読み上げログ一覧](https://us.posthog.com/project/405771/insights/jMPDgRyX) は日本時間で最新200件を表示する。
+記録は実行開始時刻（UTC）・`source_app_id`・`requested_model` / `requested_provider`・
+実際に試みた音声の `model` / `provider`・`outcome`・`error_kind`・生成と再生の合計時間 `elapsed_ms`。
+`trigger` は `direct` / `shortcut` / `preview`。App Intentが元アプリを渡さない経路では
+`source_app_id = shortcut` とし、元アプリを推測しない。
+`outcome = completed` / `fallback_completed` だけが再生完了。停止は `cancelled`、
+失敗は `failed` / `fallback_failed`。停止前にキューから捨てた要求は記録しない。
+OS音声の内部モデル名は公開されていないので `macos-say` / `windows-system-speech` と記録する。
+
+通知タイトル・本文・変換後の文章・音声・APIキー・Googleの応答・自由入力のアプリ表示名は送らない。
+匿名のランダムなインストールIDだけをアプリデータ内に保存し、person profile生成・GeoIPを無効化、
+端末IPの自動補完を防ぐため `$ip` を固定の `0.0.0.0` に置き換える。
+画面の自動収集・セッションリプレイは使用しない。
+送信は別スレッドの上限128件のメモリキューで行い、通信失敗・キュー満杯でも発声を待たせない。
+イベントはディスクへ保存せず再送しないため、オフラインや終了時には欠落する場合がある。
+
+ビルド時に環境変数 `READAPP_POSTHOG_PROJECT_TOKEN` へPostHogの公開project tokenを渡す。
+個人APIキーをアプリへ渡さない。token未指定のビルドは警告を出して収集を無効にする。
+公開tokenをソース・`.env`・ドキュメントへ保存しない。パッケージを作る際も同じ環境変数が必要。
+送信API: [PostHog Capture API](https://posthog.com/docs/api/capture)。
 
 ## 事業方針（会話で確定済み）
 

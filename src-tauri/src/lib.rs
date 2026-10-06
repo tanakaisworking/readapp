@@ -1,8 +1,11 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+#[cfg(target_os = "macos")]
+mod menubar;
 pub mod notifications;
 pub mod speech;
 pub mod subscription;
 pub mod transform;
+mod telemetry;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -22,6 +25,8 @@ pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
     /// すべて読み上げモード。ONなら個別設定に関わらず読む。
     speak_all: Mutex<bool>,
+    /// 全体の読み上げ。OFFで再生中・待機中の音声も停止する。
+    speech_enabled: Mutex<bool>,
     /// 表示名の上書き (ファイル選択で追加したアプリ用)。
     names: Mutex<HashMap<String, String>>,
     mode: Mutex<String>,
@@ -69,6 +74,8 @@ struct SavedSettings {
     enabled: HashMap<String, bool>,
     #[serde(default)]
     speak_all: bool,
+    #[serde(default = "speech_enabled_default")]
+    speech_enabled: bool,
     #[serde(default)]
     names: HashMap<String, String>,
     #[serde(default = "persona_mode_default")]
@@ -83,6 +90,10 @@ struct SavedSettings {
     volume: u8,
     #[serde(default)]
     onboarded: bool,
+}
+
+fn speech_enabled_default() -> bool {
+    true
 }
 
 fn default_volume() -> u8 {
@@ -106,6 +117,7 @@ impl Default for AppSettings {
         Self {
             enabled: Mutex::new(HashMap::new()),
             speak_all: Mutex::new(false),
+            speech_enabled: Mutex::new(true),
             names: Mutex::new(HashMap::new()),
             mode: Mutex::new(persona_mode_default()),
             persona: Mutex::new(default_persona_id()),
@@ -125,6 +137,29 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    fn change_speech_enabled(&self, enabled: bool) {
+        if let Ok(mut b) = self.speech_enabled.lock() {
+            *b = enabled;
+            speech::system::set_enabled(enabled);
+        }
+        self.save();
+        self.notify_speech_controls();
+    }
+
+    fn notify_speech_controls(&self) {
+        let handle = self.app_handle.lock().ok().and_then(|h| h.clone());
+        if let Some(handle) = handle {
+            let controls = SpeechControls { speech_enabled: self.speech_enabled(), volume: self.volume() };
+            #[cfg(target_os = "macos")]
+            menubar::sync(&handle, controls.speech_enabled, controls.volume);
+            handle.emit("speech-controls-changed", controls).ok();
+        }
+    }
+
+    pub fn speech_enabled(&self) -> bool {
+        self.speech_enabled.lock().map(|b| *b).unwrap_or(false)
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
             .lock()
@@ -227,6 +262,7 @@ impl AppSettings {
         SavedSettings {
             enabled: self.enabled.lock().map(|m| m.clone()).unwrap_or_default(),
             speak_all: self.speak_all.lock().map(|b| *b).unwrap_or(false),
+            speech_enabled: self.speech_enabled(),
             names: self.names.lock().map(|m| m.clone()).unwrap_or_default(),
             mode: self.mode.lock().map(|m| m.clone()).unwrap_or_else(|_| persona_mode_default()),
             persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
@@ -261,6 +297,10 @@ impl AppSettings {
                     }
                     if let Ok(mut b) = self.speak_all.lock() {
                         *b = saved.speak_all;
+                    }
+                    if let Ok(mut b) = self.speech_enabled.lock() {
+                        *b = saved.speech_enabled;
+                        speech::system::set_enabled(*b);
                     }
                     if let Ok(mut m) = self.names.lock() {
                         *m = saved.names;
@@ -350,7 +390,10 @@ fn catalog() -> &'static [CatalogApp] {
 /// - 直接届いた通知: カタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)
 /// - ショートカット経由: ON (ユーザーがショートカット側で対象アプリに選んだもの。MAS版はアプリ別ON/OFFを出さない)
 fn should_speak(settings: &AppSettings, app_id: &str, route: Route) -> bool {
-    // readapp自身の通知は「試しに喋る」と設定確認用なので、設定に関わらず読む
+    if !settings.speech_enabled() {
+        return false;
+    }
+    // readapp自身の通知は設定確認用なので、アプリ別設定に関わらず読む
     if app_id == SELF_APP_ID || settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
         return true;
     }
@@ -412,6 +455,12 @@ fn set_speak_all(state: State<'_, AppSettings>, enabled: bool) {
     state.save();
 }
 
+/// 全体をOFFにした時は、保存を待たずに音声を止める。
+#[tauri::command]
+fn set_speech_enabled(state: State<'_, AppSettings>, enabled: bool) {
+    state.change_speech_enabled(enabled);
+}
+
 #[tauri::command]
 fn get_personas() -> Vec<transform::Persona> {
     transform::personas()
@@ -432,6 +481,8 @@ fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
     // 存在しない声の指定は捨てる (OS既定・プレミアム枠・搭載声のみ受ける)
     const PREMIUM: [&str; 2] = ["clear", "warm"];
     let known = voice_id == "system"
+        || speech::premium::is_voice(&voice_id)
+        || speech::gemini::is_voice(&voice_id)
         || PREMIUM.contains(&voice_id.as_str())
         || speech::system::list_voices()
             .iter()
@@ -453,10 +504,43 @@ fn set_volume(state: State<'_, AppSettings>, volume: u8) {
         speech::system::set_volume(*v);
     }
     state.save();
+    state.notify_speech_controls();
+}
+
+#[tauri::command]
+fn cloud_tts_configured() -> bool {
+    speech::premium::configured()
+}
+
+#[tauri::command]
+fn get_speech_issue() -> Option<speech::status::SpeechIssue> {
+    speech::status::get()
+}
+
+#[derive(Serialize)]
+struct GeminiByokStatus { supported: bool, configured: bool }
+
+#[tauri::command]
+async fn gemini_byok_status() -> Result<GeminiByokStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| GeminiByokStatus {
+        supported: speech::gemini_key::supported(), configured: speech::gemini_key::configured(),
+    }).await.map_err(|_| "APIキーの登録状態を確認できませんでした".to_owned())
+}
+
+#[tauri::command]
+async fn save_gemini_key(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || speech::gemini_key::save(&key).map_err(str::to_owned))
+        .await.map_err(|_| "APIキーを保存できませんでした".to_owned())?
+}
+
+#[tauri::command]
+async fn delete_gemini_key() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| speech::gemini_key::delete().map_err(str::to_owned))
+        .await.map_err(|_| "APIキーを削除できませんでした".to_owned())?
 }
 
 /// アプリごとの声を設定する。None で解除 (全体の声に戻す)。
-/// 受けるのはOS既定とこのMacにある声だけ (プレミアム声はアプリごとには選べない)。
+/// OS既定、このMacにある声、Gemini BYOKの声を受け付ける。
 #[tauri::command]
 fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: Option<String>) {
     let app_id = app_id.trim().to_string();
@@ -470,7 +554,7 @@ fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: Option
             }
         }
         Some(v) => {
-            let known = v == "system" || speech::system::list_voices().iter().any(|sv| sv.id == v);
+            let known = v == "system" || speech::gemini::is_voice(&v) || speech::system::list_voices().iter().any(|sv| sv.id == v);
             if !known {
                 return;
             }
@@ -482,10 +566,17 @@ fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: Option
     state.save();
 }
 
+#[derive(Clone, Serialize)]
+struct SpeechControls {
+    speech_enabled: bool,
+    volume: u8,
+}
+
 #[derive(Serialize)]
 struct FullState {
     enabled: HashMap<String, bool>,
     speak_all: bool,
+    speech_enabled: bool,
     names: HashMap<String, String>,
     mode: String,
     persona: String,
@@ -501,6 +592,7 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
     FullState {
         enabled: s.enabled,
         speak_all: s.speak_all,
+        speech_enabled: s.speech_enabled,
         names: s.names,
         mode: s.mode,
         persona: s.persona,
@@ -969,7 +1061,10 @@ pub(crate) fn speak_notification(
     if !fresh_notification(settings, app_id, &format!("{title}\n{body}"), route) {
         return None;
     }
-    speak_now(settings, app_id, title, body)
+    speak_now(settings, app_id, title, body, match route {
+        Route::Direct => telemetry::Trigger::Direct,
+        Route::Shortcut => telemetry::Trigger::Shortcut,
+    })
 }
 
 /// 最近読んだ通知 (重複防止用)。
@@ -1028,9 +1123,13 @@ fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: R
     true
 }
 
-/// transform → speak (ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
+/// transform → speak (アプリ別ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
 /// 「Claudeの作業、終わったみたいだよ」のように言えるようにする。
-fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> Option<String> {
+fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str, trigger: telemetry::Trigger) -> Option<String> {
+    if !settings.speech_enabled() {
+        return None;
+    }
+    let request = speech::system::request()?;
     let raw = if title.is_empty() {
         body.to_string()
     } else if body.is_empty() {
@@ -1044,8 +1143,7 @@ fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> O
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    speech::system::speak(&text, &settings.voice_for(app_id));
-    Some(text)
+    speech::system::speak(&text, &settings.voice_for(app_id), request, telemetry::Context::new(app_id, trigger)).then_some(text)
 }
 
 /// 読み上げ前の整形: 不可視文字 (メールのプレビュー埋め草等) を消し、空白を詰め、
@@ -1120,8 +1218,8 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
         match intent_target(&app) {
             IntentTarget::Always => {
                 record_received(&settings, INTENT_APP_ID, "", &text);
-                if fresh_notification(&settings, INTENT_APP_ID, &text, Route::Shortcut) {
-                    speak_now(&settings, INTENT_APP_ID, "", &text);
+                if settings.speech_enabled() && fresh_notification(&settings, INTENT_APP_ID, &text, Route::Shortcut) {
+                    speak_now(&settings, INTENT_APP_ID, "", &text, telemetry::Trigger::Shortcut);
                 }
             }
             IntentTarget::App { id, name } => {
@@ -1165,7 +1263,7 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
 }
 
 /// 「試しに喋る」: 実通知なしで変換→発声まで通す (M1)。
-/// 試し聞きなのでON/OFFに関わらず喋る。
+/// アプリ別ON/OFFは無視するが、全体OFF・消音には従う。
 /// 変換に数秒かかるのでasync指定でメインスレッド (画面) を塞がない。
 #[tauri::command(async)]
 fn test_speak(
@@ -1174,7 +1272,7 @@ fn test_speak(
     title: String,
     body: String,
 ) -> Result<String, String> {
-    Ok(speak_now(&state, &app_id, &title, &body).unwrap_or_default())
+    Ok(speak_now(&state, &app_id, &title, &body, telemetry::Trigger::Preview).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -1184,13 +1282,39 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "macos")]
+    let context = {
+        let mut context = context;
+        // 非表示でもWKWebView生成はアプリをactivateする。設定を開くまで生成しない。
+        for window in &mut context.config_mut().app.windows {
+            if window.label == "main" {
+                window.create = false;
+            }
+        }
+        context
+    };
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(false);
+    builder
         // 二重起動を既存インスタンスへ転送 (deep-link機能でURLも転送される)。
-        // Windowsで別プロセスが設定を迂回するのを防ぐ。
+        // AppIntentによる起動もURLなしで届くため、ここでは設定画面を表示しない。
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    window.hide().ok();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (window, event);
+        })
         .manage(AppSettings::default())
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -1219,10 +1343,16 @@ pub fn run() {
             get_settings,
             set_app_enabled,
             set_speak_all,
+            set_speech_enabled,
             set_mode,
             get_personas,
             set_persona,
             set_voice,
+            cloud_tts_configured,
+            get_speech_issue,
+            gemini_byok_status,
+            save_gemini_key,
+            delete_gemini_key,
             set_app_voice,
             set_volume,
             set_onboarded,
@@ -1230,6 +1360,7 @@ pub fn run() {
             test_speak
         ])
         .setup(|app| {
+            speech::system::set_app_handle(app.handle().clone());
             // 音量を下げた時の書き出しファイルが前回の異常終了で残っていれば消す (通知本文の音声のため)
             // 通知を受け付ける前に済ませる (今回の書き出しを消さないため)
             speech::system::remove_leftover_files();
@@ -1244,7 +1375,20 @@ pub fn run() {
                 let settings = handle.state::<AppSettings>();
                 if let Ok(dir) = app.path().app_data_dir() {
                     settings.load(&dir.join("settings.json"));
+                    telemetry::init(&dir);
                 }
+            }
+            // トレイを先に作り、窓を隠しても設定・終了の入口を失わないようにする。
+            #[cfg(target_os = "macos")]
+            {
+                menubar::install(&handle)?;
+                if !handle.state::<AppSettings>().onboarded.lock().map(|b| *b).unwrap_or(false) {
+                    menubar::show_settings(&handle);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            if let Some(window) = handle.get_webview_window("main") {
+                window.show()?;
             }
             // macOS変換ヘルパーの解決 (M4)。無ければ素文フォールバック。
             {
@@ -1311,8 +1455,15 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // macOSのReopenには通知・AppIntentの起動も含まれる。
+            // 設定を前面に出すのはメニューバーからの明示操作と初回案内だけ。
+            if let tauri::RunEvent::Exit = event {
+                speech::system::set_enabled(false);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1372,6 +1523,32 @@ mod tests {
             .insert("slack".to_string(), "system:Otoya".to_string());
         assert_eq!(settings.voice_for("slack"), "system:Otoya");
         assert_eq!(settings.voice_for("discord"), "system:Kyoko");
+    }
+
+    #[test]
+    fn global_off_blocks_all_notification_routes_and_previews() {
+        let settings = AppSettings::default();
+        *settings.speech_enabled.lock().unwrap() = false;
+        *settings.speak_all.lock().unwrap() = true;
+        for route in [Route::Direct, Route::Shortcut] {
+            for app in [SELF_APP_ID, INTENT_APP_ID, "slack", "dev.test"] {
+                assert!(!should_speak(&settings, app, route));
+                assert!(speak_notification(&settings, app, "会議中", "", route).is_none());
+            }
+        }
+        assert!(speak_now(&settings, "preview", "試聴", "", telemetry::Trigger::Preview).is_none());
+    }
+
+    #[test]
+    fn global_off_is_persisted_and_old_settings_still_enable_speech() {
+        let settings = AppSettings::default();
+        assert!(settings.speech_enabled());
+        *settings.speech_enabled.lock().unwrap() = false;
+        let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        let saved: SavedSettings = serde_json::from_str(&json).unwrap();
+        assert!(!saved.speech_enabled);
+        let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
+        assert!(old.speech_enabled);
     }
 
     #[test]

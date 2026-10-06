@@ -4,6 +4,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { Home } from "@/views/home";
 import { AppDetail } from "@/views/app-detail";
 import { Onboarding } from "@/views/onboarding";
+import { SpeechIssueNotice } from "@/components/speech-issue-notice";
 import "./index.css";
 
 type View = { name: "home" } | { name: "app"; appId: string };
@@ -13,7 +14,20 @@ function App() {
   const { state, personas, platform, edition } = api;
   const [view, setView] = useState<View>({ name: "home" });
   const [speaking, setSpeaking] = useState(false);
+  const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
+  const issueId = api.speechIssue ? JSON.stringify(api.speechIssue) : null;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!issueId) setDismissedIssue(null);
+  }, [issueId]);
+
+  useEffect(() => {
+    if (state?.speech_enabled === false || state?.volume === 0) {
+      if (timer.current) clearTimeout(timer.current);
+      setSpeaking(false);
+    }
+  }, [state?.speech_enabled, state?.volume]);
 
   // システムの外観に追従 (DESIGN.md ダークモード)
   useEffect(() => {
@@ -26,6 +40,7 @@ function App() {
 
   const preview = useCallback(
     async (appId: string, title: string, body: string) => {
+      if (api.state?.speech_enabled === false || api.state?.volume === 0) return;
       setSpeaking(true);
       try {
         await api.speak(appId, title, body);
@@ -78,6 +93,10 @@ function App() {
   return (
     <MotionConfig reducedMotion="user">
     <main className="min-h-screen">
+      {api.speechIssue && issueId !== dismissedIssue && <div className="mx-5 mt-3">
+        <SpeechIssueNotice issue={api.speechIssue} onDismiss={() => setDismissedIssue(issueId)}
+          onUseSystem={state.voice === api.speechIssue.voice_id ? async () => { await api.setVoice("system"); setDismissedIssue(issueId); } : undefined} />
+      </div>}
       <AnimatePresence mode="wait">
         <motion.div
           key={view.name === "app" ? view.appId : "home"}

@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=READAPP_POSTHOG_PROJECT_TOKEN");
+    if std::env::var("READAPP_POSTHOG_PROJECT_TOKEN").is_err() {
+        println!("cargo:warning=PostHog telemetry is disabled; set READAPP_POSTHOG_PROJECT_TOKEN when packaging readapp");
+    }
     // direct_capture: macOSの直接監視 (Accessibility) を組み込むか。
     // MAS版 (feature "mas") はサンドボックスで使えないため外す。
     println!("cargo::rustc-check-cfg=cfg(direct_capture)");

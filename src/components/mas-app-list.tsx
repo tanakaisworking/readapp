@@ -128,6 +128,72 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
     }
   };
 
+  const ordered = [...(apps ?? []).filter((app) => app.added), ...(apps ?? []).filter((app) => !app.added)];
+  const appRow = (app: MasApp) => {
+    const ok = app.added && (setup[app.id]?.verified ?? false);
+    const status = ok ? "受け取っています" : app.added ? "ショートカットでオンにしてください" : "まだ追加していません";
+    return (
+      <li
+        key={app.id}
+        className="flex items-center gap-3 rounded-lg bg-card px-3.5 py-2 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"
+      >
+        <span
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold"
+          style={{ backgroundColor: `${knownApp(app.id).color}2e` }}
+          aria-hidden="true"
+        >
+          {app.name.slice(0, 1)}
+        </span>
+        <button
+          type="button"
+          onClick={() => onOpenApp(app.id)}
+          aria-label={`${app.name}の設定を開く`}
+          className="min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+        >
+          <span className="block truncate text-sm font-medium">{app.name}</span>
+          <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
+            {ok && <Check className="h-3 w-3 text-emerald-500" strokeWidth={3} aria-hidden="true" />}
+            {status}
+            {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
+          </span>
+        </button>
+        {!app.added ? (
+          <Button
+            size="sm"
+            onClick={() => {
+              addStartedAt.current[app.id] = Math.floor(Date.now() / 1000);
+              void run(
+                "add_app_automation",
+                { appId: app.id },
+                `${app.name}のショートカットを開けませんでした。アプリを入れ直してください。`,
+              );
+            }}
+          >
+            <Plus />
+            追加
+          </Button>
+        ) : (
+          !ok && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void run(
+                  "open_shortcuts_app",
+                  undefined,
+                  "開けませんでした。Launchpadから「ショートカット」を開いてください。",
+                )
+              }
+            >
+              <ExternalLink />
+              開く
+            </Button>
+          )
+        )}
+      </li>
+    );
+  };
+
   return (
     <div>
       {apps === null ? (
@@ -137,79 +203,27 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
           一覧にあるアプリが見つかりませんでした。下の「ほかのアプリ」から追加できます。
         </p>
       ) : (
-        <ul className="space-y-1.5">
-          {apps.map((app) => {
-            const ok = app.added && (setup[app.id]?.verified ?? false);
-            const status = ok ? "受け取っています" : app.added ? "ショートカットでオンにしてください" : "まだ追加していません";
-            return (
-              <li
-                key={app.id}
-                className="flex items-center gap-3 rounded-lg bg-card px-3.5 py-3 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"
-              >
-                <span
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold"
-                  style={{ backgroundColor: `${knownApp(app.id).color}2e` }}
-                  aria-hidden="true"
-                >
-                  {app.name.slice(0, 1)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onOpenApp(app.id)}
-                  aria-label={`${app.name}の設定を開く`}
-                  className="min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                >
-                  <span className="block truncate text-sm font-medium">{app.name}</span>
-                  <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-                    {ok && <Check className="h-3 w-3 text-emerald-500" strokeWidth={3} aria-hidden="true" />}
-                    {status}
-                    {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
-                  </span>
-                </button>
-                {!app.added ? (
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      addStartedAt.current[app.id] = Math.floor(Date.now() / 1000);
-                      void run(
-                        "add_app_automation",
-                        { appId: app.id },
-                        `${app.name}のショートカットを開けませんでした。アプリを入れ直してください。`,
-                      );
-                    }}
-                  >
-                    <Plus />
-                    追加
-                  </Button>
-                ) : (
-                  !ok && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        void run(
-                          "open_shortcuts_app",
-                          undefined,
-                          "開けませんでした。Launchpadから「ショートカット」を開いてください。",
-                        )
-                      }
-                    >
-                      <ExternalLink />
-                      開く
-                    </Button>
-                  )
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <ul className="space-y-1.5">
+            {ordered.slice(0, 4).map(appRow)}
+          </ul>
+          {ordered.length > 4 && (
+            <details className="mt-2">
+              <summary className="disclosure-summary">すべてのアプリ<span className="ml-auto text-xs font-normal text-muted-foreground">{ordered.length}件</span></summary>
+              <ul className="mt-2 space-y-1.5">{ordered.slice(4).map(appRow)}</ul>
+            </details>
+          )}
+        </>
       )}
 
-      <div className="mt-3 rounded-lg bg-surface-muted px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
-        「追加」でショートカットが開いたら「ショートカットを追加」を押します。次にショートカットの「オートメーション」一覧で、そのアプリの行の右端のスイッチをオンにします。
-        そのアプリの通知が届くと「受け取っています」になります。
-        <AutomationListHint />
-      </div>
+      <details className="mt-3">
+        <summary className="disclosure-summary">アプリの設定方法</summary>
+        <div className="mt-2 rounded-lg bg-surface-muted px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
+          「追加」でショートカットが開いたら「ショートカットを追加」を押します。次にショートカットの「オートメーション」一覧で、そのアプリの行の右端のスイッチをオンにします。
+          そのアプリの通知が届くと「受け取っています」になります。
+          <AutomationListHint />
+        </div>
+      </details>
 
       {error && (
         <p className={cn("mt-2 text-xs text-muted-foreground")} role="alert">
@@ -218,7 +232,7 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
       )}
 
       <details className="mt-3">
-        <summary className="cursor-pointer list-none text-[13px] font-medium text-primary outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+        <summary className="disclosure-summary">
           ほかのアプリを読み上げる
         </summary>
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">

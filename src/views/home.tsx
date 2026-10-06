@@ -1,26 +1,12 @@
-import { useEffect, useState } from "react";
-import { motion } from "motion/react";
-import { FolderOpen, Plus, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { PersonaPicker } from "@/components/persona-picker";
-import { PremiumSheet } from "@/components/premium-sheet";
+import { HomeAppList } from "@/components/home-app-list";
+import { HomeSpeech } from "@/components/home-speech";
 import { MasAppList } from "@/components/mas-app-list";
-import { TrySpeak } from "@/components/try-speak";
-import { VolumeSlider } from "@/components/volume-slider";
-import {
-  KNOWN_APPS,
-  VOICES,
-  knownApp,
-  personaAccent,
-  speechSample,
-  type Persona,
-} from "@/lib/apps";
+import { KNOWN_APPS, GEMINI_VOICES, type FullState, type Persona } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
-import type { FullState } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -36,388 +22,122 @@ interface Props {
 }
 
 export function Home({ api, state, personas, platform, edition, speaking, onPreview, onOpenApp, onPickPersona }: Props) {
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [watching, setWatching] = useState(false);
+  const [togglingSpeech, setTogglingSpeech] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const [lastAt, setLastAt] = useState<number | null>(null);
-  const [observed, setObserved] = useState<{ id: string; name: string }[]>([]);
-  const displayOf = (id: string) =>
-    state.names[id] ?? knownApp(id).name;
   const [systemVoices, setSystemVoices] = useState<{ id: string; name: string; lang: string }[]>([]);
-  const [premiumVoice, setPremiumVoice] = useState<string | null>(null);
-  const onCount = KNOWN_APPS.filter((a) => isOn(state, a.id)).length;
-  // readapp自身 (試しに喋る・設定確認の通知) は常に読むので、ON/OFFの対象として出さない
-  const SELF = "readapp";
-  /** アプリごとの声を変えている時、その声の名前 */
-  const voiceNameOf = (id: string): string | null => {
-    const v = state.app_voices[id];
-    if (!v) return null;
-    if (v === "system") return "システム音声";
-    return systemVoices.find((sv) => sv.id === v)?.name ?? null;
-  };
-  const extraIds = Object.keys(state.enabled).filter((id) => id !== SELF && !KNOWN_APPS.some((a) => a.id === id));
-  const newcomers = observed.filter(
-    (o) => o.id !== SELF && !KNOWN_APPS.some((a) => a.id === o.id) && !(o.id in state.enabled),
-  );
-  const totalOn = onCount + extraIds.filter((id) => isOn(state, id)).length;
-  // MAS版は読み上げるアプリをショートカット側 (通知オートメーションのアプリ選択) で決める
   const mas = edition === "mas";
+  const extraIds = Object.keys(state.enabled).filter((id) => id !== "readapp" && !KNOWN_APPS.some((a) => a.id === id));
+  const totalOn = [...KNOWN_APPS.map((a) => a.id), ...extraIds].filter((id) => isOn(state, id)).length;
   const lastText = lastAt
-    ? `最終受信: ${new Date(lastAt * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}`
+    ? `最終受信 ${new Date(lastAt * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}`
     : null;
-  const active = personas.find((p) => p.id === state.persona);
-  const voices = [
-    ...VOICES.filter((v) => !v.premium),
-    ...systemVoices.map((v) => ({ id: v.id, name: v.name, tagline: v.lang, premium: false })),
-    ...VOICES.filter((v) => v.premium),
-  ];
+  const voiceNameOf = (id: string): string | null => {
+    const voice = state.app_voices[id];
+    if (!voice) return null;
+    if (voice === "system") return "システム音声";
+    if (voice.startsWith("gemini:")) return GEMINI_VOICES.find((v) => v.id === voice)?.name ?? null;
+    return systemVoices.find((v) => v.id === voice)?.name ?? null;
+  };
 
   useEffect(() => {
-    if (platform === "macos") {
-      invoke<boolean>("ax_trusted").then(setAxOn).catch(() => setAxOn(false));
-    }
+    let disposed = false;
     invoke<{ id: string; name: string; lang: string }[]>("get_system_voices")
-      .then(setSystemVoices)
-      .catch(() => {});
-    const fetchObserved = () =>
-      invoke<{ id: string; name: string }[]>("get_observed_apps").then(setObserved).catch(() => {});
-    void fetchObserved();
-    let unlisten: (() => void) | null = null;
-    listen("observed-changed", () => void fetchObserved())
-      .then((f) => {
-        unlisten = f;
-      })
-      .catch(() => {});
-    return () => unlisten?.();
-  }, [platform]);
+      .then((voices) => { if (!disposed) setSystemVoices(voices); }).catch(() => {});
+    return () => { disposed = true; };
+  }, []);
 
-  // 監視状態と最終受信を追う (ローカル取得、5秒間隔)
+  const refreshWatch = useCallback(async () => {
+    const [last, trusted, active] = await Promise.all([
+      invoke<{ app_id: string; at: number } | null>("get_last_received").catch(() => null),
+      mas ? Promise.resolve(false) : invoke<boolean>("ax_trusted").catch(() => false),
+      mas ? Promise.resolve(false) : invoke<boolean>("ax_watching").catch(() => false),
+    ]);
+    return { last, trusted, active };
+  }, [mas]);
+
   useEffect(() => {
     if (platform !== "macos") return;
-    let alive = true;
+    let disposed = false;
     const tick = async () => {
-      if (!alive) return;
-      await refreshWatch();
+      const status = await refreshWatch();
+      if (disposed) return;
+      setLastAt(status.last?.at ?? null);
+      setAxOn(status.trusted);
+      setWatching(status.active);
     };
     void tick();
     const id = setInterval(() => void tick(), 5000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [platform]);
-
-  const refreshWatch = async () => {
-    try {
-      const [w, last] = await Promise.all([
-        invoke<boolean>("ax_watching"),
-        invoke<{ app_id: string; at: number } | null>("get_last_received").catch(() => null),
-      ]);
-      setWatching(w);
-      setLastAt(last ? last.at : null);
-    } catch {
-      /* 取得失敗は無視 */
-    }
-  };
+    return () => { disposed = true; clearInterval(id); };
+  }, [platform, refreshWatch]);
 
   const requestAx = async () => {
     const ok = await invoke<boolean>("ax_request_access").catch(() => false);
-    if (ok) {
-      setAxOn(true);
-      // 許可直後に即反映 (インターバルを待たない)
-      await refreshWatch();
-    } else {
-      await invoke("ax_open_settings").catch(() => {});
-      const recheck = await invoke<boolean>("ax_trusted").catch(() => false);
-      setAxOn(recheck);
-      if (recheck) await refreshWatch();
+    if (!ok) await invoke("ax_open_settings").catch(() => {});
+    const status = await refreshWatch();
+    setAxOn(status.trusted);
+    setWatching(status.active);
+    setLastAt(status.last?.at ?? null);
+  };
+
+  const toggleSpeech = async (enabled: boolean) => {
+    setTogglingSpeech(true);
+    setSpeechError(null);
+    try {
+      await api.setSpeechEnabled(enabled);
+    } catch {
+      setSpeechError("読み上げを切り替えられませんでした。もう一度お試しください。");
+    } finally {
+      setTogglingSpeech(false);
     }
   };
 
-  const pickVoice = async (id: string, name: string, premium: boolean) => {
-    if (premium) {
-      setPremiumVoice(name);
-      return;
-    }
-    await api.setVoice(id);
-    onPreview();
-  };
-
-  const pickFromFile = async () => {
-    const picked = await open({
-      directory: false,
-      multiple: false,
-      defaultPath: "/Applications",
-      filters: [{ name: "Application", extensions: ["app"] }],
-    }).catch(() => null);
-    if (typeof picked !== "string") return;
-    // 通知に出るアプリ名 (ローカライズ名) と同じキーにする
-    const app = await invoke<{ id: string; name: string } | null>("resolve_app", { path: picked }).catch(
-      () => null,
-    );
-    if (!app) return;
-    await api.setEnabled(app.id, true, app.name);
-  };
+  const reading = state.speech_enabled && state.volume > 0 && (mas || state.speak_all || totalOn > 0);
+  const statusText = !state.speech_enabled ? "読み上げ停止中" : state.volume === 0 ? "消音中" : mas
+    ? lastAt ? "通知を受信済み" : "ショートカットの設定待ち"
+    : reading ? state.speak_all ? "すべての通知を読み上げ" : `${totalOn}件のアプリを読み上げ` : "おやすみ中";
+  const receiving = platform === "macos" && !mas
+    ? axOn === null ? "受信状態を確認中…" : watching ? "通知の受信待ち" : axOn ? "通知の受信を開始しています…" : lastAt ? "ショートカットから受信済み" : "直接受信の許可待ち"
+    : null;
 
   return (
     <div className="px-5 pb-5 pt-4">
-      <header className="flex items-center gap-2.5">
-        <span
-          className={cn(
-            "h-2.5 w-2.5 rounded-full",
-            (mas ? lastAt : state.speak_all || totalOn > 0) ? "bg-emerald-500" : "bg-border",
-          )}
-        />
-        <h1 className="text-[15px] font-semibold">readapp</h1>
-        <p className="ml-auto text-xs text-muted-foreground">
-          {mas
-            ? lastAt
-              ? "通知を受け取っています"
-              : "ショートカットの設定待ち"
-            : state.speak_all
-              ? "すべての通知を読み上げ中"
-              : totalOn > 0
-                ? `${totalOn}件のアプリを読み上げ中`
-                : "おやすみ中"}
-        </p>
-      </header>
-      <p className="mt-3 text-[22px] font-semibold leading-snug">通知を、好きな声に。</p>
-
-      {mas && (
-        <section aria-label="読み上げるアプリ" className="mt-4">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-xs font-medium text-muted-foreground">読み上げるアプリ</h2>
-            {lastText && <span className="text-xs text-muted-foreground">{lastText}</span>}
+      <header>
+        <div className="flex items-center gap-2.5">
+          <span className={cn("h-2 w-2 shrink-0 rounded-full", reading ? "bg-emerald-500" : "bg-border")} aria-hidden="true" />
+          <h1 className="text-[15px] font-semibold">readapp</h1>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs font-medium">読み上げ</span>
+            <Switch checked={state.speech_enabled} onChange={(v) => void toggleSpeech(v)} label="読み上げ" disabled={togglingSpeech} />
           </div>
-          <div className="mt-2">
-            <MasAppList onOpenApp={onOpenApp} voiceNameOf={voiceNameOf} />
-          </div>
-        </section>
-      )}
-      {!mas && (
-      <section aria-label="すべて読み上げ" className="mt-4 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium">すべての通知を読み上げる</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              オンの間はアプリ別の設定に関わらず読む
-            </p>
-          </div>
-          <Switch
-            checked={state.speak_all}
-            onChange={(v) => void api.setSpeakAll(v)}
-            label="すべての通知を読み上げる"
-          />
         </div>
-      </section>
-      )}
-
-      <section aria-label="キャラ" className="mt-4">
-        <h2 className="text-xs font-medium text-muted-foreground">キャラ</h2>
-        <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-          {active && (
-            <>
-              <div className="flex items-center gap-2.5">
-                <motion.span
-                  animate={speaking ? { scale: [1, 1.1, 1] } : { scale: 1 }}
-                  transition={
-                    speaking
-                      ? { duration: 2, repeat: Infinity, ease: "easeInOut" }
-                      : { duration: 0.15 }
-                  }
-                  className="flex h-10 w-10 items-center justify-center rounded-full text-base font-semibold"
-                  style={{ backgroundColor: `${personaAccent(active.id)}44` }}
-                >
-                  {active.name.slice(0, 1)}
-                </motion.span>
-                <div>
-                  <p className="text-sm font-medium">{active.name}</p>
-                  <p className="text-xs text-muted-foreground">{active.tagline}</p>
-                </div>
-                <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setPickerOpen((v) => !v)}>
-                  変える
-                </Button>
-              </div>
-              {pickerOpen && (
-                <div className="mt-3">
-                  <PersonaPicker
-                    personas={personas}
-                    selected={state.persona}
-                    onSelect={(id) => void onPickPersona(id)}
-                    speaking={speaking}
-                  />
-                </div>
-              )}
-              <p className="mt-3 whitespace-pre-line rounded-lg bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
-                「{speechSample(active.id, state.mode)}」
-              </p>
-              <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-surface-muted p-1" role="group" aria-label="話し方">
-                {[
-                  { id: "raw", label: "素文で読む" },
-                  { id: "persona", label: "キャラっぽく話す" },
-                ].map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    aria-pressed={state.mode === m.id}
-                    onClick={() => void api.setMode(m.id)}
-                    className={cn(
-                      "h-8 rounded-md text-[13px] font-medium outline-none transition-all duration-150 focus-visible:ring-2 focus-visible:ring-primary/50",
-                      state.mode === m.id
-                        ? "bg-card text-foreground shadow-[0_1px_2px_rgba(41,39,45,0.1)]"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-              <TrySpeak platform={platform} edition={edition} onDirect={(text) => void api.speak("preview", "", text)} />
-            </>
-          )}
-        </div>
-      </section>
-
-      <section aria-label="声" className="mt-5">
-        <h2 className="text-xs font-medium text-muted-foreground">声</h2>
-        <ul className="mt-2 space-y-1.5">
-          {voices.map((v) => {
-            const selected = state.voice === v.id;
-            return (
-              <li key={v.id}>
-                <button
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => void pickVoice(v.id, v.name, v.premium)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg bg-card px-3.5 py-2.5 text-left outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
-                    selected && "ring-2 ring-primary/60",
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 text-sm font-medium">
-                      {v.name}
-                      {v.premium && (
-                        <Sparkles className="h-3.5 w-3.5 text-primary" aria-label="プレミアム" />
-                      )}
-                    </span>
-                    <span className="block text-xs text-muted-foreground">{v.tagline}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        <VolumeSlider
-          value={state.volume}
-          onCommit={async (v) => {
-            await api.setVolume(v);
-            if (v > 0) onPreview();
-          }}
-        />
-      </section>
-
-      {!mas && (
-      <section aria-label="読み上げるアプリ" className="mt-5">
-        <h2 className="text-xs font-medium text-muted-foreground">読み上げるアプリ</h2>
-        <ul className="mt-2 space-y-1.5">
-          {[...KNOWN_APPS, ...extraIds.map((id) => knownApp(id))].map((app) => (
-            <li key={app.id}>
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => onOpenApp(app.id)}
-                onKeyDown={(e) => e.key === "Enter" && onOpenApp(app.id)}
-                className="flex cursor-pointer items-center gap-3 rounded-lg bg-card px-3.5 py-3 outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"
-              >
-                <span
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold"
-                  style={{ backgroundColor: `${app.color}2e` }}
-                >
-                  {displayOf(app.id).slice(0, 1)}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{displayOf(app.id)}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {isOn(state, app.id) ? "読み上げます" : "おやすみ中"}
-                    {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
-                  </span>
-                </span>
-                <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-                  <Switch
-                    checked={isOn(state, app.id)}
-                    onChange={(v) => void api.setEnabled(app.id, v)}
-                    label={`${displayOf(app.id)}の読み上げ`}
-                  />
-                </span>
-              </div>
-            </li>
-          ))}
-        </ul>
-        {newcomers.length > 0 && (
-          <div className="mt-3 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-            <p className="text-[13px] font-medium">見つけたアプリ</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              通知が来ていたアプリです。追加すると読み上げます。
-            </p>
-            <ul className="mt-2 space-y-1.5">
-              {newcomers.map((o) => (
-                <li key={o.id} className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm">{o.name}</span>
-                  <Button size="sm" variant="outline" onClick={() => void api.setEnabled(o.id, true, o.name)}>
-                    <Plus className="h-3.5 w-3.5" />
-                    追加
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </div>
+        <p className="mt-1.5 text-xs text-muted-foreground" role="status">{statusText}</p>
+        {speechError && <p className="mt-1.5 text-xs text-muted-foreground" role="alert">{speechError}</p>}
+        {(receiving || lastText) && (
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{[receiving, lastText].filter(Boolean).join(" · ")}</p>
         )}
-        <Button className="mt-3 w-full" variant="outline" onClick={() => void pickFromFile()}>
-          <FolderOpen className="h-4 w-4" />
-          ファイルからアプリを追加
-        </Button>
+      </header>
+
+      {platform === "macos" && !mas && axOn === false && (
+        <details className="mt-3 rounded-lg bg-surface-muted px-3.5 py-2.5">
+          <summary className="disclosure-summary">通知を直接受け取る</summary>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">許可すると、ショートカットの登録なしで通知を受け取れます。</p>
+          <Button className="mt-3" size="sm" variant="outline" onClick={() => void requestAx()}>受信を許可</Button>
+        </details>
+      )}
+
+      <section aria-label="読み上げるアプリ" className="mt-4">
+        <h2 className="text-xs font-medium text-muted-foreground">読み上げるアプリ</h2>
+        <div className="mt-2">
+          {mas
+            ? <MasAppList onOpenApp={onOpenApp} voiceNameOf={voiceNameOf} />
+            : <HomeAppList api={api} state={state} onOpenApp={onOpenApp} voiceNameOf={voiceNameOf} />}
+        </div>
       </section>
-      )}
 
-
-
-      {platform === "macos" && edition !== "mas" && (
-        <section aria-label="直接監視" className="mt-5">
-          <h2 className="text-xs font-medium text-muted-foreground">直接監視</h2>
-          <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-            {!axOn ? (
-              <>
-                <p className="text-[13px] font-medium">ショートカット経由で受けています</p>
-                <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                  許可すると、ショートカットの登録なしで通知が届きます。
-                </p>
-                <Button className="mt-3 w-full" variant="outline" onClick={() => void requestAx()}>
-                  通知の直接監視を許可
-                </Button>
-              </>
-            ) : (
-              <>
-                <p className="flex items-center gap-1.5 text-[13px] font-medium">
-                  <span
-                    className={cn(
-                      "h-2 w-2 rounded-full",
-                      watching ? "bg-emerald-500" : "bg-border",
-                    )}
-                  />
-                  {watching ? "通知を受け取っています" : "開始待ちです…"}
-                </p>
-                <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                  {lastAt
-                    ? `最終受信: ${new Date(lastAt * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}`
-                    : "まだ受信がありません。通知が来たら読み上げます。"}
-                </p>
-              </>
-            )}
-          </div>
-        </section>
-      )}
-      <PremiumSheet voiceName={premiumVoice} onClose={() => setPremiumVoice(null)} />
+      <HomeSpeech api={api} state={state} personas={personas} systemVoices={systemVoices} platform={platform} edition={edition} speaking={speaking} onPreview={onPreview} onPickPersona={onPickPersona} />
     </div>
   );
 }

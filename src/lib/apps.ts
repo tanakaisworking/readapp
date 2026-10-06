@@ -22,6 +22,17 @@ export const VOICES: Voice[] = [
   { id: "warm", name: "ウォーム", tagline: "寄り添う声", premium: true },
 ];
 
+export const CLOUD_VOICES: Voice[] = [
+  { id: "cloud:Kore", name: "Kore", tagline: "落ち着いた声 · Gemini", premium: false },
+  { id: "cloud:Aoede", name: "Aoede", tagline: "軽やかな声 · Gemini", premium: false },
+  { id: "cloud:Puck", name: "Puck", tagline: "明るい声 · Gemini", premium: false },
+  { id: "cloud:Charon", name: "Charon", tagline: "語りかける声 · Gemini", premium: false },
+];
+
+export const GEMINI_VOICES: Voice[] = CLOUD_VOICES.map((voice) => ({
+  ...voice, id: voice.id.replace("cloud:", "gemini:"), tagline: voice.tagline.replace("Gemini", "自分のAPIキー"),
+}));
+
 export interface Persona {
   id: string;
   name: string;
@@ -32,6 +43,8 @@ export interface Persona {
 export interface FullState {
   enabled: Record<string, boolean>;
   speak_all: boolean;
+  /** 全体の読み上げ。OFFで再生中・待機中の音声も停止 */
+  speech_enabled: boolean;
   names: Record<string, string>;
   mode: string;
   persona: string;

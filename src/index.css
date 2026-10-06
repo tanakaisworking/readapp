@@ -15,6 +15,8 @@
   --color-primary-soft: #eeeaff;
 
   --color-border: #e7e3de;
+  --color-warning: #916324;
+  --color-warning-soft: #f6efdf;
 
   /* 角は柔らかく (small 10 / button 13 / card 18 / panel 22) */
   --radius-sm: 10px;
@@ -33,6 +35,8 @@
 
   --color-primary: #9a86f0;
   --color-primary-soft: #3a3352;
+  --color-warning: #eac686;
+  --color-warning-soft: #3b3329;
 
   --color-border: #3d3a46;
 }
@@ -40,5 +44,30 @@
 @layer base {
   body {
     @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer components {
+  .disclosure-summary {
+    @apply flex cursor-pointer list-none items-center gap-1.5 rounded-sm py-1 text-[13px] font-medium outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/50;
+  }
+
+  .disclosure-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .disclosure-summary::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-right: 4px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg);
+    flex-shrink: 0;
+  }
+
+  details[open] > .disclosure-summary::before {
+    transform: rotate(45deg);
   }
 }

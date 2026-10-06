@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "readapp",
+        "visible": false,
         "width": 400,
         "height": 680,
         "minWidth": 360,

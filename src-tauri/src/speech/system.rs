@@ -8,8 +8,15 @@
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, OnceLock};
+
+use super::playback::{Playback, Request};
+use crate::telemetry::{Context, SpeechEvent};
+
+pub fn set_app_handle(handle: tauri::AppHandle) {
+    APP_HANDLE.set(handle).ok();
+}
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 /// OS標準の声。id "system" はOS既定の声、`system:<名前>` は指名。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -91,22 +98,50 @@ pub fn list_voices() -> Vec<SystemVoice> {
 /// 音量の上限 (%)。これ未満の時だけ音量を付けて再生する。
 pub const MAX_VOLUME: u8 = 100;
 
-/// 今の音量 (0〜100 %)。キューに溜まった分も読み始める時の値を使う (途中で消音にしたら残りも読まない)。
-static VOLUME: AtomicU8 = AtomicU8::new(MAX_VOLUME);
-
-pub fn set_volume(volume: u8) {
-    VOLUME.store(volume.min(MAX_VOLUME), Ordering::Relaxed);
+fn playback() -> &'static Playback {
+    static PLAYBACK: OnceLock<Playback> = OnceLock::new();
+    PLAYBACK.get_or_init(Playback::new)
 }
 
-fn queue() -> &'static mpsc::Sender<(String, String)> {
-    static TX: OnceLock<mpsc::Sender<(String, String)>> = OnceLock::new();
+pub fn set_volume(volume: u8) {
+    playback().set_volume(volume);
+}
+
+pub fn set_enabled(enabled: bool) {
+    playback().set_enabled(enabled);
+}
+
+pub fn cancel_pending() {
+    playback().cancel_pending();
+}
+
+fn notify_remote_status() {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        handle.emit("speech-issue-changed", super::status::get()).ok();
+    }
+}
+
+pub(super) fn clear_byok_issue() {
+    if super::status::clear_for("gemini:") { notify_remote_status(); }
+}
+
+/// 変換前に取得し、停止後に変換が終わっても古い音声を鳴らさない。
+pub(crate) fn request() -> Option<SpeechRequest> {
+    playback().request().map(SpeechRequest)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SpeechRequest(Request);
+
+fn queue() -> &'static mpsc::Sender<(String, String, SpeechRequest, Context)> {
+    static TX: OnceLock<mpsc::Sender<(String, String, SpeechRequest, Context)>> = OnceLock::new();
     TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(String, String)>();
+        let (tx, rx) = mpsc::channel::<(String, String, SpeechRequest, Context)>();
         std::thread::spawn(move || {
-            for (text, voice) in rx {
-                let volume = VOLUME.load(Ordering::Relaxed);
-                if volume > 0 {
-                    speak_once(&text, &voice, volume);
+            for (text, voice, request, context) in rx {
+                if playback().accepts(request.0) {
+                    speak_once(&text, &voice, playback().volume(), request, context);
                 }
             }
         });
@@ -114,12 +149,12 @@ fn queue() -> &'static mpsc::Sender<(String, String)> {
     })
 }
 
-/// 読み上げ要求をキューへ。呼び出し元は待たない。空文字と消音中は捨てる。
-pub fn speak(text: &str, voice: &str) {
-    if text.is_empty() || VOLUME.load(Ordering::Relaxed) == 0 {
-        return;
+/// 読み上げ要求をキューへ。停止前の要求・空文字は捨てる。
+pub(crate) fn speak(text: &str, voice: &str, request: SpeechRequest, context: Context) -> bool {
+    if text.is_empty() || !playback().accepts(request.0) {
+        return false;
     }
-    queue().send((text.to_string(), voice.to_string())).ok();
+    queue().send((text.to_string(), voice.to_string(), request, context)).is_ok()
 }
 
 /// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。
@@ -143,7 +178,40 @@ fn afplay_volume(volume: u8) -> String {
     format!("{:.2}", f32::from(volume.min(MAX_VOLUME)) / 100.0)
 }
 
-fn speak_once(text: &str, voice: &str, volume: u8) {
+fn speak_once(text: &str, voice: &str, volume: u8, request: SpeechRequest, context: Context) {
+    let event = SpeechEvent::start(context, voice);
+    let mut remote_error = None;
+    let remote = if super::gemini::is_voice(voice) {
+        Some(super::gemini::speak(text, voice, playback(), request.0))
+    } else if super::premium::is_voice(voice) {
+        Some(super::premium::speak(text, voice, playback(), request.0))
+    } else { None };
+    if let Some(result) = remote {
+        match result {
+            Ok(()) => {
+                let cancelled = !playback().accepts(request.0);
+                event.finish(voice, !cancelled, cancelled, None);
+                if !cancelled && super::status::clear_for(voice) {
+                    notify_remote_status();
+                }
+                return;
+            },
+            Err(message) => {
+                if !playback().accepts(request.0) {
+                    event.finish(voice, false, true, None);
+                    return;
+                }
+                remote_error = Some(super::status::error_kind(message));
+                if super::status::report(voice, message, || playback().accepts(request.0)) { notify_remote_status(); }
+            }
+        }
+    }
+    let completed = speak_system(text, voice, volume, request);
+    let actual_voice = if remote_error.is_some() { "system" } else { voice };
+    event.finish(actual_voice, completed, !playback().accepts(request.0), remote_error);
+}
+
+fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> bool {
     #[cfg(target_os = "macos")]
     {
         // "--" 以降は必ず本文として扱う。--input-file= 等のオプション解釈を防ぐ。
@@ -153,37 +221,22 @@ fn speak_once(text: &str, voice: &str, volume: u8) {
         }
         if volume >= MAX_VOLUME {
             // 既定の音量: すぐ読み始められるよう、そのまま喋らせる
-            if let Ok(mut child) = cmd.arg("--").arg(text).spawn() {
-                child.wait().ok();
-            }
-            return;
+            return playback().run(cmd.arg("--").arg(text), request.0);
         }
         // sayには音量の指定が無く、文中の [[volm]] はOS既定の声 (システム音声) に効かない (2026-10-06 実測)。
         // そこで一度書き出してから afplay で音量を付けて再生する。書き出しの分 (1〜2秒) 読み始めが遅れる。
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let file = std::env::temp_dir().join(format!("{SPEECH_FILE_PREFIX}{}-{n}.aiff", std::process::id()));
-        let written = cmd
-            .arg("-o")
-            .arg(&file)
-            .arg("--")
-            .arg(text)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        // 書き出し中に音量を変えたら、変えた後の値で鳴らす (消音なら鳴らさない)
-        let volume = VOLUME.load(Ordering::Relaxed);
-        if written && volume > 0 {
-            if let Ok(mut child) = Command::new("afplay")
-                .arg("-v")
-                .arg(afplay_volume(volume))
-                .arg(&file)
-                .spawn()
-            {
-                child.wait().ok();
-            }
-        }
+        let written = playback().run(cmd.arg("-o").arg(&file).arg("--").arg(text), request.0);
+        // 書き出し中に消音・停止したら再生しない。音量は最新の値を使う。
+        let volume = playback().volume();
+        let played = written && volume > 0 && playback().run(
+                Command::new("afplay").arg("-v").arg(afplay_volume(volume)).arg(&file),
+                request.0,
+            );
         std::fs::remove_file(&file).ok();
+        played
     }
     #[cfg(target_os = "windows")]
     {
@@ -198,20 +251,20 @@ fn speak_once(text: &str, voice: &str, volume: u8) {
             "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = [int]$env:READAPP_VOLUME; $s.Speak($env:READAPP_SPEECH_TEXT)"
         };
         let voice_name = voice.strip_prefix("system:").unwrap_or("");
-        if let Ok(mut child) = Command::new("powershell")
-            .args(["-NoProfile", "-Command", script])
-            .env("READAPP_SPEECH_TEXT", text)
-            .env("READAPP_VOICE", voice_name)
-            .env("READAPP_VOLUME", volume.min(MAX_VOLUME).to_string())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-        {
-            child.wait().ok();
-        }
+        playback().run(
+            Command::new("powershell")
+                .args(["-NoProfile", "-Command", script])
+                .env("READAPP_SPEECH_TEXT", text)
+                .env("READAPP_VOICE", voice_name)
+                .env("READAPP_VOLUME", volume.min(MAX_VOLUME).to_string())
+                .creation_flags(CREATE_NO_WINDOW),
+            request.0,
+        )
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (text, voice, volume);
+        let _ = (text, voice, volume, request);
+        false
     }
 }
 

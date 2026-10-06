@@ -1,19 +1,82 @@
 import { useCallback, useEffect, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { KNOWN_APPS, type FullState, type Persona } from "@/lib/apps";
+
+export interface GeminiByokStatus { supported: boolean; configured: boolean }
+export interface SpeechIssue {
+  voice_id: string;
+  kind: "quota" | "authentication" | "billing" | "connection";
+  message: string;
+}
 
 export function useSettings() {
   const [state, setState] = useState<FullState | null>(null);
   const [platform, setPlatform] = useState("macos");
   const [edition, setEdition] = useState("direct");
   const [personas, setPersonas] = useState<Persona[]>([]);
+  const [cloudTtsConfigured, setCloudTtsConfigured] = useState(false);
+  const [geminiByok, setGeminiByok] = useState<GeminiByokStatus | null>(null);
+  const [geminiByokError, setGeminiByokError] = useState<string | null>(null);
+  const [speechIssue, setSpeechIssue] = useState<SpeechIssue | null>(null);
+  const refreshGeminiByok = useCallback(async () => {
+    try {
+      setGeminiByok(await invoke<GeminiByokStatus>("gemini_byok_status"));
+      setGeminiByokError(null);
+    } catch {
+      setGeminiByokError("APIキーの登録状態を確認できませんでした。もう一度お試しください。");
+    }
+  }, []);
 
   useEffect(() => {
-    invoke<FullState>("get_state").then(setState).catch(() => {});
+    let disposed = false;
+    let received = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<SpeechIssue | null>("speech-issue-changed", ({ payload }) => {
+      if (disposed) return;
+      received = true;
+      setSpeechIssue(payload);
+    }).then((stop) => {
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {}).then(async () => {
+      const initial = await invoke<SpeechIssue | null>("get_speech_issue");
+      if (!disposed && !received) setSpeechIssue(initial);
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    let controls: Pick<FullState, "speech_enabled" | "volume"> | null = null;
+    // ネイティブメニューからの操作も、開いている設定画面へ反映する。
+    void listen<Pick<FullState, "speech_enabled" | "volume">>("speech-controls-changed", ({ payload }) => {
+      if (disposed) return;
+      controls = payload;
+      setState((s) => s ? { ...s, ...payload } : s);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => {}).then(async () => {
+      const initial = await invoke<FullState>("get_state");
+      if (!disposed) setState(controls ? { ...initial, ...controls } : initial);
+    }).catch(() => {});
     invoke<string>("get_platform").then(setPlatform).catch(() => {});
     invoke<string>("get_edition").then(setEdition).catch(() => {});
     invoke<Persona[]>("get_personas").then(setPersonas).catch(() => {});
+    invoke<boolean>("cloud_tts_configured").then(setCloudTtsConfigured).catch(() => {});
+    void refreshGeminiByok();
+    return () => { disposed = true; unlisten?.(); };
   }, []);
+
+  const saveGeminiKey = useCallback(async (key: string) => {
+    await invoke("save_gemini_key", { key });
+    await refreshGeminiByok();
+  }, [refreshGeminiByok]);
+  const deleteGeminiKey = useCallback(async () => {
+    await invoke("delete_gemini_key");
+    await refreshGeminiByok();
+  }, [refreshGeminiByok]);
 
   const setEnabled = useCallback(async (id: string, v: boolean, displayName?: string) => {
     await invoke("set_app_enabled", { appId: id, enabled: v, displayName: displayName ?? null });
@@ -31,6 +94,10 @@ export function useSettings() {
   const setSpeakAll = useCallback(async (v: boolean) => {
     await invoke("set_speak_all", { enabled: v });
     setState((s) => (s ? { ...s, speak_all: v } : s));
+  }, []);
+  const setSpeechEnabled = useCallback(async (v: boolean) => {
+    await invoke("set_speech_enabled", { enabled: v });
+    setState((s) => (s ? { ...s, speech_enabled: v } : s));
   }, []);
   const setMode = useCallback(async (v: string) => {
     await invoke("set_mode", { mode: v });
@@ -82,8 +149,16 @@ export function useSettings() {
     platform,
     edition,
     personas,
+    cloudTtsConfigured,
+    geminiByok,
+    geminiByokError,
+    speechIssue,
+    refreshGeminiByok,
+    saveGeminiKey,
+    deleteGeminiKey,
     setEnabled,
     setSpeakAll,
+    setSpeechEnabled,
     setMode,
     setPersona,
     setVoice,

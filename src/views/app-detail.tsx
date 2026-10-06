@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { knownApp } from "@/lib/apps";
+import { knownApp, GEMINI_VOICES } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
 import { cn } from "@/lib/utils";
@@ -150,7 +150,9 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
               {appName}の通知だけ、別の声で読み上げられます。
             </p>
             <ul className="mt-2 space-y-1.5">
-              {[{ id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" }, ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" }))].map((v) => {
+              {[{ id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" },
+                ...(api.geminiByok?.configured || appVoice?.startsWith("gemini:") ? GEMINI_VOICES.map((v) => ({ id: v.id as string | null, name: v.name, note: "Gemini · 自分のAPIキー" })) : []),
+                ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" }))].map((v) => {
                 const selected = appVoice === v.id;
                 return (
                   <li key={v.id ?? "default"}>
@@ -158,7 +160,7 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
                       type="button"
                       aria-pressed={selected}
                       onClick={() => void pickVoice(v.id)}
-                      disabled={speaking}
+                      disabled={speaking || !!v.id?.startsWith("gemini:") && !api.geminiByok?.configured}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-lg bg-card px-3.5 py-2.5 text-left outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-60 shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
                         selected && "ring-2 ring-primary/60",

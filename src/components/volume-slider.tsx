@@ -8,9 +8,10 @@ import { Volume1, Volume2, VolumeX } from "lucide-react";
 interface Props {
   value: number;
   onCommit: (v: number) => void | Promise<void>;
+  embedded?: boolean;
 }
 
-export function VolumeSlider({ value, onCommit }: Props) {
+export function VolumeSlider({ value, onCommit, embedded = false }: Props) {
   const [draft, setDraft] = useState(value);
   // 最後に保存へ回した値。保存の応答が操作中の値を巻き戻したり、同じ値を二重に保存したりしないよう、これと比べる
   const committed = useRef(value);
@@ -28,7 +29,7 @@ export function VolumeSlider({ value, onCommit }: Props) {
   const Icon = draft === 0 ? VolumeX : draft < 50 ? Volume1 : Volume2;
 
   return (
-    <div className="mt-3 rounded-lg bg-card px-3.5 py-3 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
+    <div className={embedded ? "mt-3" : "mt-3 rounded-lg bg-card px-3.5 py-3 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"}>
       <div className="flex items-center justify-between">
         <label htmlFor="readapp-volume" className="text-sm font-medium">
           音量
@@ -45,7 +46,15 @@ export function VolumeSlider({ value, onCommit }: Props) {
           step={5}
           value={draft}
           aria-valuetext={draft === 0 ? "消音" : `${draft}パーセント`}
-          onChange={(e) => setDraft(Number(e.target.value))}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setDraft(v);
+            // 消音だけはドラッグを離すのを待たず、その場で止める。
+            if (v === 0 && committed.current !== 0) {
+              committed.current = 0;
+              void onCommit(0);
+            }
+          }}
           onPointerUp={commit}
           onKeyUp={commit}
           onBlur={commit}
