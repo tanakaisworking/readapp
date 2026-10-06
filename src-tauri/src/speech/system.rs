@@ -95,6 +95,7 @@ fn queue() -> &'static mpsc::Sender<(String, String, u8)> {
     TX.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<(String, String, u8)>();
         std::thread::spawn(move || {
+            remove_leftover_files();
             for (text, voice, volume) in rx {
                 speak_once(&text, &voice, volume);
             }
@@ -112,6 +113,20 @@ pub fn speak(text: &str, voice: &str, volume: u8) {
     queue()
         .send((text.to_string(), voice.to_string(), volume.min(MAX_VOLUME)))
         .ok();
+}
+
+/// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。
+const SPEECH_FILE_PREFIX: &str = "readapp-speech-";
+
+fn remove_leftover_files() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(SPEECH_FILE_PREFIX) {
+            std::fs::remove_file(entry.path()).ok();
+        }
+    }
 }
 
 /// afplay -v に渡す値 (1.0 が元の大きさ)。
@@ -139,7 +154,7 @@ fn speak_once(text: &str, voice: &str, volume: u8) {
         // そこで一度書き出してから afplay で音量を付けて再生する。書き出しの分 (1〜2秒) 読み始めが遅れる。
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let file = std::env::temp_dir().join(format!("readapp-speech-{}-{n}.aiff", std::process::id()));
+        let file = std::env::temp_dir().join(format!("{SPEECH_FILE_PREFIX}{}-{n}.aiff", std::process::id()));
         let written = cmd
             .arg("-o")
             .arg(&file)

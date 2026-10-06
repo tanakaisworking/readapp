@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Volume1, Volume2, VolumeX } from "lucide-react";
 
 // 読み上げの音量。動かしている間は表示だけ変え、離した時に保存して試し読みする
@@ -12,10 +12,18 @@ interface Props {
 
 export function VolumeSlider({ value, onCommit }: Props) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  // 最後に保存へ回した値。保存の応答が操作中の値を巻き戻したり、同じ値を二重に保存したりしないよう、これと比べる
+  const committed = useRef(value);
+  useEffect(() => {
+    if (value === committed.current) return; // 自分の保存の応答 (その間に動かしていても巻き戻さない)
+    committed.current = value;
+    setDraft(value);
+  }, [value]);
 
   const commit = () => {
-    if (draft !== value) void onCommit(draft);
+    if (draft === committed.current) return;
+    committed.current = draft;
+    void onCommit(draft);
   };
   const Icon = draft === 0 ? VolumeX : draft < 50 ? Volume1 : Volume2;
 
