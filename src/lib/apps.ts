@@ -38,6 +38,8 @@ export interface FullState {
   voice: string;
   /** アプリごとの声 (app_id → 声ID)。無いアプリは voice を使う */
   app_voices: Record<string, string>;
+  /** 読み上げの音量 (0〜100 %) */
+  volume: number;
   onboarded: boolean;
 }
 

@@ -29,6 +29,8 @@ pub struct AppSettings {
     voice: Mutex<String>,
     /// アプリごとの声 (app_id → 声ID)。無いアプリは全体の声を使う。
     app_voices: Mutex<HashMap<String, String>>,
+    /// 読み上げの音量 (0〜100 %)。
+    volume: Mutex<u8>,
     onboarded: Mutex<bool>,
     data_file: Mutex<Option<PathBuf>>,
     /// macOS変換ヘルパーのパス。無ければ素文フォールバック (実行時のみ)。
@@ -77,8 +79,14 @@ struct SavedSettings {
     voice: String,
     #[serde(default)]
     app_voices: HashMap<String, String>,
+    #[serde(default = "default_volume")]
+    volume: u8,
     #[serde(default)]
     onboarded: bool,
+}
+
+fn default_volume() -> u8 {
+    speech::system::MAX_VOLUME
 }
 
 fn default_persona_id() -> String {
@@ -103,6 +111,7 @@ impl Default for AppSettings {
             persona: Mutex::new(default_persona_id()),
             voice: Mutex::new(default_voice_id()),
             app_voices: Mutex::new(HashMap::new()),
+            volume: Mutex::new(default_volume()),
             onboarded: Mutex::new(false),
             data_file: Mutex::new(None),
             helper_path: Mutex::new(None),
@@ -128,6 +137,11 @@ impl AppSettings {
             .lock()
             .map(|p| p.clone())
             .unwrap_or_else(|_| default_persona_id())
+    }
+
+    /// 読み上げの音量 (0〜100 %)。
+    pub fn volume(&self) -> u8 {
+        self.volume.lock().map(|v| *v).unwrap_or_else(|_| default_volume())
     }
 
     /// そのアプリで使う声。アプリごとの声があればそれ、無ければ全体の声。
@@ -218,6 +232,7 @@ impl AppSettings {
             persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
             voice: self.voice.lock().map(|v| v.clone()).unwrap_or_else(|_| default_voice_id()),
             app_voices: self.app_voices.lock().map(|m| m.clone()).unwrap_or_default(),
+            volume: self.volume(),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
         }
     }
@@ -261,6 +276,9 @@ impl AppSettings {
                     }
                     if let Ok(mut m) = self.app_voices.lock() {
                         *m = saved.app_voices;
+                    }
+                    if let Ok(mut v) = self.volume.lock() {
+                        *v = saved.volume.min(speech::system::MAX_VOLUME);
                     }
                     if let Ok(mut b) = self.onboarded.lock() {
                         *b = saved.onboarded;
@@ -426,6 +444,15 @@ fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
     state.save();
 }
 
+/// 読み上げの音量を設定する (0〜100 %。超える値は100に丸める)。
+#[tauri::command]
+fn set_volume(state: State<'_, AppSettings>, volume: u8) {
+    if let Ok(mut v) = state.volume.lock() {
+        *v = volume.min(speech::system::MAX_VOLUME);
+    }
+    state.save();
+}
+
 /// アプリごとの声を設定する。None で解除 (全体の声に戻す)。
 /// 受けるのはOS既定とこのMacにある声だけ (プレミアム声はアプリごとには選べない)。
 #[tauri::command]
@@ -462,6 +489,7 @@ struct FullState {
     persona: String,
     voice: String,
     app_voices: HashMap<String, String>,
+    volume: u8,
     onboarded: bool,
 }
 
@@ -476,6 +504,7 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
         persona: s.persona,
         voice: s.voice,
         app_voices: s.app_voices,
+        volume: s.volume,
         onboarded: s.onboarded,
     }
 }
@@ -1013,7 +1042,7 @@ fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str) -> O
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    speech::system::speak(&text, &settings.voice_for(app_id));
+    speech::system::speak(&text, &settings.voice_for(app_id), settings.volume());
     Some(text)
 }
 
@@ -1193,6 +1222,7 @@ pub fn run() {
             set_persona,
             set_voice,
             set_app_voice,
+            set_volume,
             set_onboarded,
             windows_ensure_access,
             test_speak
@@ -1337,6 +1367,19 @@ mod tests {
             .insert("slack".to_string(), "system:Otoya".to_string());
         assert_eq!(settings.voice_for("slack"), "system:Otoya");
         assert_eq!(settings.voice_for("discord"), "system:Kyoko");
+    }
+
+    #[test]
+    fn volume_defaults_to_full_and_round_trips() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.volume(), 100);
+        *settings.volume.lock().unwrap() = 40;
+        let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        let back: SavedSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.volume, 40);
+        // 旧形式 (volumeなし) は100
+        let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
+        assert_eq!(old.volume, 100);
     }
 
     #[test]

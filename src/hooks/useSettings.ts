@@ -59,6 +59,11 @@ export function useSettings() {
     });
   }, []);
 
+  const setVolume = useCallback(async (v: number) => {
+    await invoke("set_volume", { volume: v });
+    setState((s) => (s ? { ...s, volume: v } : s));
+  }, []);
+
   const setOnboarded = useCallback(async (done: boolean) => {
     await invoke("set_onboarded", { done });
     setState((s) => (s ? { ...s, onboarded: done } : s));
@@ -82,6 +87,7 @@ export function useSettings() {
     setPersona,
     setVoice,
     setAppVoice,
+    setVolume,
     setOnboarded,
     speak,
   };

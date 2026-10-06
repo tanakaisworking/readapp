@@ -87,28 +87,40 @@ pub fn list_voices() -> Vec<SystemVoice> {
     }
 }
 
-fn queue() -> &'static mpsc::Sender<(String, String)> {
-    static TX: OnceLock<mpsc::Sender<(String, String)>> = OnceLock::new();
+/// 音量の上限 (%)。これ未満の時だけ音量を付けて再生する。
+pub const MAX_VOLUME: u8 = 100;
+
+fn queue() -> &'static mpsc::Sender<(String, String, u8)> {
+    static TX: OnceLock<mpsc::Sender<(String, String, u8)>> = OnceLock::new();
     TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(String, String)>();
+        let (tx, rx) = mpsc::channel::<(String, String, u8)>();
         std::thread::spawn(move || {
-            for (text, voice) in rx {
-                speak_once(&text, &voice);
+            for (text, voice, volume) in rx {
+                speak_once(&text, &voice, volume);
             }
         });
         tx
     })
 }
 
-/// 読み上げ要求をキューへ。呼び出し元は待たない。空文字は捨てる。
-pub fn speak(text: &str, voice: &str) {
-    if text.is_empty() {
+/// 読み上げ要求をキューへ。呼び出し元は待たない。空文字と音量0は捨てる。
+/// volume は 0〜100 (%)。
+pub fn speak(text: &str, voice: &str, volume: u8) {
+    if text.is_empty() || volume == 0 {
         return;
     }
-    queue().send((text.to_string(), voice.to_string())).ok();
+    queue()
+        .send((text.to_string(), voice.to_string(), volume.min(MAX_VOLUME)))
+        .ok();
 }
 
-fn speak_once(text: &str, voice: &str) {
+/// afplay -v に渡す値 (1.0 が元の大きさ)。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn afplay_volume(volume: u8) -> String {
+    format!("{:.2}", f32::from(volume.min(MAX_VOLUME)) / 100.0)
+}
+
+fn speak_once(text: &str, voice: &str, volume: u8) {
     #[cfg(target_os = "macos")]
     {
         // "--" 以降は必ず本文として扱う。--input-file= 等のオプション解釈を防ぐ。
@@ -116,9 +128,37 @@ fn speak_once(text: &str, voice: &str) {
         if let Some(name) = voice.strip_prefix("system:") {
             cmd.arg("-v").arg(name);
         }
-        if let Ok(mut child) = cmd.arg("--").arg(text).spawn() {
-            child.wait().ok();
+        if volume >= MAX_VOLUME {
+            // 既定の音量: すぐ読み始められるよう、そのまま喋らせる
+            if let Ok(mut child) = cmd.arg("--").arg(text).spawn() {
+                child.wait().ok();
+            }
+            return;
         }
+        // sayには音量の指定が無く、文中の [[volm]] はOS既定の声 (システム音声) に効かない (2026-10-06 実測)。
+        // そこで一度書き出してから afplay で音量を付けて再生する。書き出しの分 (1〜2秒) 読み始めが遅れる。
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = std::env::temp_dir().join(format!("readapp-speech-{}-{n}.aiff", std::process::id()));
+        let written = cmd
+            .arg("-o")
+            .arg(&file)
+            .arg("--")
+            .arg(text)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if written {
+            if let Ok(mut child) = Command::new("afplay")
+                .arg("-v")
+                .arg(afplay_volume(volume))
+                .arg(&file)
+                .spawn()
+            {
+                child.wait().ok();
+            }
+        }
+        std::fs::remove_file(&file).ok();
     }
     #[cfg(target_os = "windows")]
     {
@@ -126,16 +166,18 @@ fn speak_once(text: &str, voice: &str) {
         // PowerShellはスマートクォートも区切りと解釈するため、エスケープでは防げない。
         // CREATE_NO_WINDOW でコンソールウィンドウの表示を抑える。
         const CREATE_NO_WINDOW: u32 = 0x08000000;
+        // 音量は SpeechSynthesizer.Volume (0〜100) にそのまま渡す
         let script = if voice.strip_prefix("system:").is_some() {
-            "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; try { $s.SelectVoice($env:READAPP_VOICE) } catch {}; $s.Speak($env:READAPP_SPEECH_TEXT)"
+            "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; try { $s.SelectVoice($env:READAPP_VOICE) } catch {}; $s.Volume = [int]$env:READAPP_VOLUME; $s.Speak($env:READAPP_SPEECH_TEXT)"
         } else {
-            "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak($env:READAPP_SPEECH_TEXT)"
+            "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = [int]$env:READAPP_VOLUME; $s.Speak($env:READAPP_SPEECH_TEXT)"
         };
         let voice_name = voice.strip_prefix("system:").unwrap_or("");
         if let Ok(mut child) = Command::new("powershell")
             .args(["-NoProfile", "-Command", script])
             .env("READAPP_SPEECH_TEXT", text)
             .env("READAPP_VOICE", voice_name)
+            .env("READAPP_VOLUME", volume.min(MAX_VOLUME).to_string())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
         {
@@ -144,6 +186,18 @@ fn speak_once(text: &str, voice: &str) {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (text, voice);
+        let _ = (text, voice, volume);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn afplay_volume_is_linear_fraction() {
+        assert_eq!(afplay_volume(100), "1.00");
+        assert_eq!(afplay_volume(35), "0.35");
+        assert_eq!(afplay_volume(250), "1.00");
     }
 }

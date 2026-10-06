@@ -10,6 +10,7 @@ import { PersonaPicker } from "@/components/persona-picker";
 import { PremiumSheet } from "@/components/premium-sheet";
 import { MasAppList } from "@/components/mas-app-list";
 import { TrySpeak } from "@/components/try-speak";
+import { VolumeSlider } from "@/components/volume-slider";
 import {
   KNOWN_APPS,
   VOICES,
@@ -307,6 +308,13 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
             );
           })}
         </ul>
+        <VolumeSlider
+          value={state.volume}
+          onCommit={async (v) => {
+            await api.setVolume(v);
+            if (v > 0) onPreview();
+          }}
+        />
       </section>
 
       {!mas && (
