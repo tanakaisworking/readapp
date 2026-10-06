@@ -171,7 +171,9 @@ fn speak_once(text: &str, voice: &str, volume: u8) {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if written {
+        // 書き出し中に音量を変えたら、変えた後の値で鳴らす (消音なら鳴らさない)
+        let volume = VOLUME.load(Ordering::Relaxed);
+        if written && volume > 0 {
             if let Ok(mut child) = Command::new("afplay")
                 .arg("-v")
                 .arg(afplay_volume(volume))

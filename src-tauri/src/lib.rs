@@ -1231,7 +1231,8 @@ pub fn run() {
         ])
         .setup(|app| {
             // 音量を下げた時の書き出しファイルが前回の異常終了で残っていれば消す (通知本文の音声のため)
-            std::thread::spawn(speech::system::remove_leftover_files);
+            // 通知を受け付ける前に済ませる (今回の書き出しを消さないため)
+            speech::system::remove_leftover_files();
             use tauri_plugin_deep_link::DeepLinkExt;
             let handle = app.handle().clone();
             // イベント送信用ハンドルを保持 (observed-changed等)
