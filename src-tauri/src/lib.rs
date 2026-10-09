@@ -1055,16 +1055,27 @@ pub(crate) fn speak_notification(
     body: &str,
     route: Route,
 ) -> Option<String> {
-    if !should_speak(settings, app_id, route) {
-        return None;
-    }
-    if !fresh_notification(settings, app_id, &format!("{title}\n{body}"), route) {
+    if !accept_notification(settings, app_id, title, body, route) {
         return None;
     }
     speak_now(settings, app_id, title, body, match route {
         Route::Direct => telemetry::Trigger::Direct,
         Route::Shortcut => telemetry::Trigger::Shortcut,
     })
+}
+
+/// AI変換の待ち行列へ入れる前に、受信時点で読み上げ対象を確定する。
+pub(crate) fn accept_notification(
+    settings: &AppSettings,
+    app_id: &str,
+    title: &str,
+    body: &str,
+    route: Route,
+) -> bool {
+    if !should_speak(settings, app_id, route) {
+        return false;
+    }
+    fresh_notification(settings, app_id, &format!("{title}\n{body}"), route)
 }
 
 /// 最近読んだ通知 (重複防止用)。
@@ -1111,12 +1122,12 @@ fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: R
     recent.retain(|r| now.duration_since(r.at) < DUPLICATE_WINDOW);
     // 通知元が分からない受信 (汎用オートメーションで通知の「アプリ」が空) は、どのアプリとも同じとみなす
     let same_app = |other: &str| other == app_id || other == INTENT_APP_ID || app_id == INTENT_APP_ID;
-    if let Some(i) = recent.iter().position(|r| {
+    if recent.iter().any(|r| {
         r.key == key
-            && (r.route != route || (same_app(&r.app_id) && now.duration_since(r.at) < SAME_ROUTE_WINDOW))
+            && same_app(&r.app_id)
+            && (r.route != route || now.duration_since(r.at) < SAME_ROUTE_WINDOW)
     }) {
-        // 対になる受信を消費する (3回目以降の同文は改めて判定する)
-        recent.remove(i);
+        // 記録は窓が切れるまで残す。直接監視・汎用・アプリ別の3経路以上でも1回にする。
         return false;
     }
     recent.push(RecentSpoken { key, app_id: app_id.to_string(), route, at: now });
@@ -1125,7 +1136,7 @@ fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: R
 
 /// transform → speak (アプリ別ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
 /// 「Claudeの作業、終わったみたいだよ」のように言えるようにする。
-fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str, trigger: telemetry::Trigger) -> Option<String> {
+pub(crate) fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str, trigger: telemetry::Trigger) -> Option<String> {
     if !settings.speech_enabled() {
         return None;
     }
@@ -1678,6 +1689,38 @@ mod tests {
     }
 
     #[test]
+    fn three_or_more_receipts_do_not_reopen_duplicate_notification() {
+        for first in [Route::Direct, Route::Shortcut] {
+            let settings = AppSettings::default();
+            assert!(fresh_notification(&settings, "slack", "会議。15時から", first));
+            for route in [Route::Shortcut, Route::Direct, Route::Shortcut, Route::Direct] {
+                assert!(!fresh_notification(&settings, "slack", "会議\n15時から", route));
+            }
+            assert_eq!(settings.recent_spoken.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn simultaneous_receipts_accept_only_one_transform() {
+        let settings = AppSettings::default();
+        std::thread::scope(|scope| {
+            let accepted: Vec<_> = (0..12).map(|i| {
+                let settings = &settings;
+                scope.spawn(move || accept_notification(settings, "slack", "会議", "15時から", if i % 2 == 0 { Route::Direct } else { Route::Shortcut }))
+            }).collect();
+            assert_eq!(accepted.into_iter().map(|h| h.join().unwrap()).filter(|accepted| *accepted).count(), 1);
+        });
+    }
+
+    #[test]
+    fn duplicate_is_read_again_after_window_expires() {
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, "slack", "了解。", Route::Direct));
+        settings.recent_spoken.lock().unwrap()[0].at = std::time::Instant::now() - DUPLICATE_WINDOW;
+        assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+    }
+
+    #[test]
     fn same_text_on_same_route_at_once_is_one_notification() {
         // 汎用とアプリ別のオートメーションが同じ通知で同時に動いた場合
         let settings = AppSettings::default();
@@ -1698,6 +1741,7 @@ mod tests {
         let settings = AppSettings::default();
         assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
         assert!(fresh_notification(&settings, "discord", "了解。", Route::Shortcut));
+        assert!(fresh_notification(&settings, "mail", "了解。", Route::Direct));
     }
 
     #[test]

@@ -23,7 +23,9 @@ struct Helper {
         }
         do {
             let session = LanguageModelSession(instructions: instruction)
-            let response = try await session.respond(to: text)
+            let prompt = "新しく届いた通知のデータ:\n\(text)\n\n何の通知が来たのか、指定されたキャラの口調でユーザーへ一言だけ知らせてください。分かる場合は通知元アプリ名も入れてください。"
+            // 通知の事実を取り次ぐ用途なので、ランダムな言い足しを抑える。
+            let response = try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy))
             print(response.content)
         } catch {
             fputs("ERR: " + String(describing: error) + "\n", stderr)

@@ -27,7 +27,7 @@ use core_foundation::string::{CFString, CFStringRef};
 use tauri::{AppHandle, Manager};
 
 use super::app_id_for;
-use crate::{speak_notification, AppSettings};
+use crate::{accept_notification, should_speak, speak_now, AppSettings};
 
 type AXError = c_int;
 type AXUIElementRef = *const c_void;
@@ -131,12 +131,21 @@ pub struct Banner {
     pub title: String,
     pub subtitle: String,
     pub body: String,
+    is_stack: bool,
 }
 
 impl Banner {
-    /// 既読判定のキー。スタックは同じUUIDのまま中身が入れ替わるので中身も含める。
+    /// スタックは同じUUIDのまま別の通知へ入れ替わるため、本文も照合する。
     fn key(&self) -> String {
         format!("{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}", self.uid, self.app_name, self.title, self.subtitle, self.body)
+    }
+
+    fn speech_title(&self) -> String {
+        if self.subtitle.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}。{}", self.title, self.subtitle)
+        }
     }
 }
 
@@ -186,6 +195,7 @@ pub fn banner_from_parts(uid: &str, desc: &str, texts: &[(String, String)]) -> O
         title,
         subtitle,
         body: body.join("\n"),
+        is_stack: false,
     })
 }
 
@@ -256,12 +266,14 @@ fn find_alerts(el: &El, depth: u8, out: &mut Vec<Banner>) {
     if depth > 10 {
         return;
     }
-    if el.string("AXSubrole").is_some_and(|s| is_notification_subrole(&s)) {
+    let subrole = el.string("AXSubrole").unwrap_or_default();
+    if is_notification_subrole(&subrole) {
         let mut texts = Vec::new();
         collect_texts(el, 0, &mut texts);
         let uid = el.string("AXIdentifier").unwrap_or_default();
         let desc = el.string("AXDescription").unwrap_or_default();
-        if let Some(b) = banner_from_parts(&uid, &desc, &texts) {
+        if let Some(mut b) = banner_from_parts(&uid, &desc, &texts) {
+            b.is_stack = subrole.ends_with("Stack");
             out.push(b);
         }
         return;
@@ -302,8 +314,8 @@ pub fn start_if_trusted(handle: AppHandle) {
         }
         STARTED.store(true, Ordering::SeqCst);
         eprintln!("[readapp] ax capture: started");
-        let tx = pipeline_worker(handle);
-        watch_loop(tx);
+        let tx = pipeline_worker(handle.clone());
+        watch_loop(handle, tx);
     });
 }
 
@@ -314,14 +326,10 @@ fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
         for b in rx {
             let settings = handle.state::<AppSettings>();
             let app_id = app_id_for(&b.app_name);
-            settings.observe_named(&app_id, &b.app_name);
-            let title = if b.subtitle.is_empty() {
-                b.title.clone()
-            } else {
-                format!("{}。{}", b.title, b.subtitle)
-            };
-            crate::record_received(&settings, &app_id, &title, &b.body);
-            speak_notification(&settings, &app_id, &title, &b.body, crate::Route::Direct);
+            // 待機中にアプリをOFFにされた場合も読まない。重複判定は走査時に済んでいる。
+            if should_speak(&settings, &app_id, crate::Route::Direct) {
+                speak_now(&settings, &app_id, &b.speech_title(), &b.body, crate::telemetry::Trigger::Direct);
+            }
         }
     });
     tx
@@ -336,7 +344,15 @@ const PID_REFRESH_TICKS: u32 = 40;
 /// 走査結果のうち読み上げるものを返す。全件を既読化する。
 /// primed=false (起動直後) と、まとめて現れた分は読まない。
 fn fresh_to_speak(seen: &mut Seen, banners: Vec<Banner>, primed: bool) -> Vec<Banner> {
-    let fresh: Vec<Banner> = banners.into_iter().filter(|b| seen.mark(b.key())).collect();
+    let fresh: Vec<Banner> = banners.into_iter().filter(|b| {
+        // 通常バナー→スタックの表示切替でも同じ内容を読み直さない。
+        let content_fresh = seen.mark(b.key());
+        if b.uid.is_empty() {
+            return content_fresh;
+        }
+        let id_fresh = seen.mark(format!("{}\u{1f}{}", b.uid, b.app_name));
+        if b.is_stack { content_fresh } else { id_fresh && content_fresh }
+    }).collect();
     if !primed || fresh.len() > BURST_LIMIT {
         if primed {
             eprintln!("[readapp] ax: skipped {} notifications shown at once", fresh.len());
@@ -346,7 +362,7 @@ fn fresh_to_speak(seen: &mut Seen, banners: Vec<Banner>, primed: bool) -> Vec<Ba
     fresh
 }
 
-fn watch_loop(tx: mpsc::Sender<Banner>) {
+fn watch_loop(handle: AppHandle, tx: mpsc::Sender<Banner>) {
     let mut seen = Seen::new();
     let mut pid: Option<c_int> = None;
     // 起動時に出ていたもの (置きっぱなしのアラート等) は読まない
@@ -359,7 +375,14 @@ fn watch_loop(tx: mpsc::Sender<Banner>) {
         ticks = ticks.wrapping_add(1);
         if let Some(p) = pid {
             for b in fresh_to_speak(&mut seen, visible_banners(p), primed) {
-                eprintln!("[readapp] ax banner: {:?}", b);
+                let settings = handle.state::<AppSettings>();
+                let app_id = app_id_for(&b.app_name);
+                let title = b.speech_title();
+                settings.observe_named(&app_id, &b.app_name);
+                crate::record_received(&settings, &app_id, &title, &b.body);
+                if !accept_notification(&settings, &app_id, &title, &b.body, crate::Route::Direct) {
+                    continue;
+                }
                 if tx.send(b).is_err() {
                     return;
                 }
@@ -477,8 +500,45 @@ mod tests {
 
     #[test]
     fn stack_with_new_content_is_new_key() {
-        let a = banner_from_parts("U", "Slack、x", &[t("title", "1")]).unwrap();
-        let b = banner_from_parts("U", "Slack、x", &[t("title", "2")]).unwrap();
+        let mut a = banner_from_parts("U", "Slack、x", &[t("title", "1")]).unwrap();
+        let mut b = banner_from_parts("U", "Slack、x", &[t("title", "2")]).unwrap();
+        a.is_stack = true;
+        b.is_stack = true;
         assert_ne!(a.key(), b.key());
+        let mut seen = Seen::new();
+        assert_eq!(fresh_to_speak(&mut seen, vec![a], true).len(), 1);
+        assert_eq!(fresh_to_speak(&mut seen, vec![b], true).len(), 1);
+    }
+
+    #[test]
+    fn switching_between_banner_and_stack_does_not_repeat_same_notification() {
+        let normal = banner_from_parts("U", "Slack、x", &[t("body", "確認お願いします")]).unwrap();
+        let mut stack = normal.clone();
+        stack.is_stack = true;
+        for sequence in [vec![normal.clone(), stack.clone()], vec![stack, normal]] {
+            let mut seen = Seen::new();
+            for (index, b) in sequence.into_iter().enumerate() {
+                assert_eq!(fresh_to_speak(&mut seen, vec![b], true).len(), usize::from(index == 0));
+            }
+        }
+    }
+
+    #[test]
+    fn updated_banner_with_same_identifier_is_spoken_once() {
+        let mut seen = Seen::new();
+        let initial = banner_from_parts("U", "Spark、x", &[t("title", "メール"), t("body", "確認お願いします")]).unwrap();
+        let updated = banner_from_parts("U", "Spark、x", &[t("title", "メール"), t("body", "確認お願いします。署名")]).unwrap();
+        assert_eq!(fresh_to_speak(&mut seen, vec![initial], true).len(), 1);
+        assert!(fresh_to_speak(&mut seen, vec![updated], true).is_empty());
+    }
+
+    #[test]
+    fn different_identifiers_and_missing_identifier_keep_new_notifications() {
+        let a = banner_from_parts("U1", "Slack、x", &[t("body", "了解")]).unwrap();
+        let b = banner_from_parts("U2", "Slack、x", &[t("body", "了解")]).unwrap();
+        assert_ne!(a.key(), b.key());
+        let missing = banner_from_parts("", "Slack、x", &[t("body", "了解")]).unwrap();
+        let changed = banner_from_parts("", "Slack、x", &[t("body", "変更")]).unwrap();
+        assert_ne!(missing.key(), changed.key());
     }
 }
