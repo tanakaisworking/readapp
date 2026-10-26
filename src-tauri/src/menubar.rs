@@ -30,30 +30,85 @@ fn labels(enabled: bool, volume: u8) -> (&'static str, &'static str) {
     (toggle, status)
 }
 
-/// テンプレート画像。波形／×で状態を区別し、明暗テーマはOSに任せる。
+// アプリアイコンのキャラ（顔のある吹き出し）を22pt格子の距離関数で描く。負の値が図形の内側。
+fn rounded_rect(x: f32, y: f32) -> f32 {
+    let (half_w, half_h, radius) = (8.6, 6.6, 5.6);
+    let qx = (x - 11.0).abs() - (half_w - radius);
+    let qy = (y - 10.2).abs() - (half_h - radius);
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+}
+
+fn triangle(x: f32, y: f32, [a, b, c]: [(f32, f32); 3]) -> f32 {
+    let edges = [(a, b), (b, c), (c, a)];
+    let orientation = ((b.0 - a.0) * (a.1 - c.1) - (b.1 - a.1) * (a.0 - c.0)).signum();
+    let mut distance = f32::MAX;
+    let mut inside = true;
+    for (start, end) in edges {
+        let (ex, ey) = (end.0 - start.0, end.1 - start.1);
+        let (vx, vy) = (x - start.0, y - start.1);
+        let t = ((vx * ex + vy * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+        distance = distance.min((vx - ex * t).hypot(vy - ey * t));
+        inside &= orientation * (vx * ey - vy * ex) > 0.0;
+    }
+    if inside {
+        -distance
+    } else {
+        distance
+    }
+}
+
+/// 本体と左下のしっぽをなめらかにつないだ吹き出し。
+fn bubble(x: f32, y: f32) -> f32 {
+    let body = rounded_rect(x, y);
+    let tail = triangle(x, y, [(3.4, 12.0), (10.0, 15.2), (2.6, 20.2)]);
+    let blend = 1.6;
+    let h = (blend - (body - tail).abs()).max(0.0) / blend;
+    body.min(tail) - h * h * blend * 0.25
+}
+
+fn ellipse(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> bool {
+    ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) <= 1.0
+}
+
+fn ink(x: f32, y: f32, audible: bool) -> bool {
+    const DOT: (f32, f32) = (18.4, 4.6);
+    let dot = (x - DOT.0).hypot(y - DOT.1);
+    if audible {
+        // 塗りの吹き出しから目と口を抜き、右上に通知の点を置く。
+        if dot <= 2.6 {
+            return true;
+        }
+        let eye = ellipse(x, y, 7.9, 9.3, 1.05, 1.45) || ellipse(x, y, 14.1, 9.3, 1.05, 1.45);
+        let smile = ((x - 11.0).hypot(y - 10.3) - 2.5).abs() <= 0.55 && y - 10.3 >= 1.1;
+        bubble(x, y).max(4.1 - dot) <= 0.0 && !eye && !smile
+    } else {
+        // 線だけの吹き出しに閉じた目。
+        let outline = (-1.5..=0.0).contains(&bubble(x, y));
+        let closed_eye =
+            |left: f32| (x - left - (x - left).clamp(0.0, 2.2)).hypot(y - 10.0) <= 0.55;
+        outline || closed_eye(6.9) || closed_eye(13.1)
+    }
+}
+
+/// テンプレート画像。読み上げ中は塗りの笑顔、停止・消音中は線と閉じた目で区別し、明暗テーマはOSに任せる。
 fn icon(audible: bool) -> Image<'static> {
     const SIZE: u32 = 44;
+    const SAMPLES: u32 = 4;
+    let scale = 22.0 / SIZE as f32;
     let mut rgba = vec![0; (SIZE * SIZE * 4) as usize];
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let x_pos = (x as f32 + 0.5) / 2.0;
-            let y_pos = (y as f32 + 0.5) / 2.0;
-            let speaker = (3.0..=7.0).contains(&x_pos) && (8.0..=14.0).contains(&y_pos)
-                || (7.0..=12.0).contains(&x_pos)
-                    && y_pos >= 8.0 - (x_pos - 7.0) * 0.8
-                    && y_pos <= 14.0 + (x_pos - 7.0) * 0.8;
-            let mark = if audible {
-                let radius = ((x_pos - 10.0).powi(2) + (y_pos - 11.0).powi(2)).sqrt();
-                x_pos > 13.0 && ((radius - 5.0).abs() < 0.6 || (radius - 8.0).abs() < 0.6)
-            } else {
-                (14.0..=20.0).contains(&x_pos)
-                    && (8.0..=14.0).contains(&y_pos)
-                    && ((x_pos - 17.0 - (y_pos - 11.0)).abs() < 0.7
-                        || (x_pos - 17.0 + (y_pos - 11.0)).abs() < 0.7)
-            };
-            if speaker || mark {
-                rgba[((y * SIZE + x) * 4 + 3) as usize] = 255;
+            let mut covered = 0;
+            for sy in 0..SAMPLES {
+                for sx in 0..SAMPLES {
+                    let x_pos = (x as f32 + (sx as f32 + 0.5) / SAMPLES as f32) * scale;
+                    let y_pos = (y as f32 + (sy as f32 + 0.5) / SAMPLES as f32) * scale;
+                    covered += u32::from(ink(x_pos, y_pos, audible));
+                }
             }
+            let samples = SAMPLES * SAMPLES;
+            rgba[((y * SIZE + x) * 4 + 3) as usize] =
+                ((covered * 255 + samples / 2) / samples) as u8;
         }
     }
     Image::new_owned(rgba, SIZE, SIZE)
