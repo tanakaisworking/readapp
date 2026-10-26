@@ -61,3 +61,8 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# macOS 27 refuses to load stripped proc-macro dylibs ("mis-aligned LINKEDIT string pool").
+# Only build-time code is left unstripped; the shipped binary is still stripped.
+[profile.release.build-override]
+strip = false
