@@ -4,6 +4,7 @@
 import AppIntents
 import AppKit
 import os
+import ServiceManagement
 import UserNotifications
 
 private let log = Logger(subsystem: "com.hibachi.readapp", category: "intent")
@@ -49,6 +50,40 @@ struct SpeakIntent: AppIntent {
 @_cdecl("readapp_app_installed")
 public func readapp_app_installed(_ bundleId: UnsafePointer<CChar>) -> Bool {
     NSWorkspace.shared.urlForApplication(withBundleIdentifier: String(cString: bundleId)) != nil
+}
+
+// ---- ログイン時に起動 (macOSの「ログイン項目」。サンドボックスのMAS版でも使える) ----
+// 状態: 0 = 未登録, 1 = 有効, 2 = システム設定で許可待ち, 3 = アプリが見つからない
+
+@_cdecl("readapp_login_item_status")
+public func readapp_login_item_status() -> Int32 {
+    switch SMAppService.mainApp.status {
+    case .enabled: return 1
+    case .requiresApproval: return 2
+    case .notFound: return 3
+    default: return 0
+    }
+}
+
+/// 登録・解除して、その後の状態を返す。失敗したら -1。
+@_cdecl("readapp_login_item_set")
+public func readapp_login_item_set(_ enabled: Bool) -> Int32 {
+    do {
+        if enabled {
+            try SMAppService.mainApp.register()
+        } else {
+            try SMAppService.mainApp.unregister()
+        }
+    } catch {
+        log.error("login item \(enabled ? "register" : "unregister", privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        return -1
+    }
+    return readapp_login_item_status()
+}
+
+@_cdecl("readapp_open_login_items_settings")
+public func readapp_open_login_items_settings() {
+    SMAppService.openSystemSettingsLoginItems()
 }
 
 /// readappが前面にいる時もテスト通知をバナー表示する (既定では前面アプリの通知は出ない)。

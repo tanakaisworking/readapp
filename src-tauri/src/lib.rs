@@ -38,6 +38,8 @@ pub struct AppSettings {
     /// 読み上げの音量 (0〜100 %)。
     volume: Mutex<u8>,
     onboarded: Mutex<bool>,
+    /// Dockにアイコンを出す (既定は出さず、メニューバーだけに常駐する)。macOSのみ。
+    show_in_dock: Mutex<bool>,
     data_file: Mutex<Option<PathBuf>>,
     /// macOS変換ヘルパーのパス。無ければ素文フォールバック (実行時のみ)。
     helper_path: Mutex<Option<PathBuf>>,
@@ -91,6 +93,8 @@ struct SavedSettings {
     volume: u8,
     #[serde(default)]
     onboarded: bool,
+    #[serde(default)]
+    show_in_dock: bool,
 }
 
 fn speech_enabled_default() -> bool {
@@ -126,6 +130,7 @@ impl Default for AppSettings {
             app_voices: Mutex::new(HashMap::new()),
             volume: Mutex::new(default_volume()),
             onboarded: Mutex::new(false),
+            show_in_dock: Mutex::new(false),
             data_file: Mutex::new(None),
             helper_path: Mutex::new(None),
             last_received: Mutex::new(None),
@@ -159,6 +164,10 @@ impl AppSettings {
 
     pub fn speech_enabled(&self) -> bool {
         self.speech_enabled.lock().map(|b| *b).unwrap_or(false)
+    }
+
+    pub fn show_in_dock(&self) -> bool {
+        self.show_in_dock.lock().map(|b| *b).unwrap_or(false)
     }
 
     pub fn mode(&self) -> Mode {
@@ -271,6 +280,7 @@ impl AppSettings {
             app_voices: self.app_voices.lock().map(|m| m.clone()).unwrap_or_default(),
             volume: self.volume(),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
+            show_in_dock: self.show_in_dock(),
         }
     }
 
@@ -324,6 +334,9 @@ impl AppSettings {
                     }
                     if let Ok(mut b) = self.onboarded.lock() {
                         *b = saved.onboarded;
+                    }
+                    if let Ok(mut b) = self.show_in_dock.lock() {
+                        *b = saved.show_in_dock;
                     }
                 } else {
                     // 旧形式: enabled・onboarded・default_personaだけ拾う
@@ -584,6 +597,7 @@ struct FullState {
     app_voices: HashMap<String, String>,
     volume: u8,
     onboarded: bool,
+    show_in_dock: bool,
 }
 
 #[tauri::command]
@@ -600,6 +614,7 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
         app_voices: s.app_voices,
         volume: s.volume,
         onboarded: s.onboarded,
+        show_in_dock: s.show_in_dock,
     }
 }
 
@@ -614,6 +629,75 @@ fn set_onboarded(state: State<'_, AppSettings>, done: bool) {
         *b = done;
     }
     state.save();
+}
+
+/// Dockにアイコンを出すか。出さない時はメニューバーだけに常駐する。
+#[tauri::command]
+fn set_show_in_dock(app: tauri::AppHandle, state: State<'_, AppSettings>, show: bool) {
+    if let Ok(mut b) = state.show_in_dock.lock() {
+        *b = show;
+    }
+    state.save();
+    #[cfg(target_os = "macos")]
+    menubar::apply_dock_policy(&app, show);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn readapp_login_item_status() -> i32;
+    fn readapp_login_item_set(enabled: bool) -> i32;
+    fn readapp_open_login_items_settings();
+}
+
+/// ログイン時に起動するか (macOSの「ログイン項目」の状態。readapp側には保存しない)。
+/// "enabled" / "disabled" / "requires_approval" (システム設定で許可待ち) / "unsupported"
+fn login_item_label(code: i32) -> &'static str {
+    match code {
+        1 => "enabled",
+        2 => "requires_approval",
+        0 | 3 => "disabled",
+        _ => "unsupported",
+    }
+}
+
+#[tauri::command]
+fn login_item_status() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        login_item_label(unsafe { readapp_login_item_status() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unsupported"
+    }
+}
+
+#[tauri::command]
+fn set_login_item(enabled: bool) -> Result<&'static str, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let code = unsafe { readapp_login_item_set(enabled) };
+        if code < 0 {
+            return Err("login_item_failed".to_string());
+        }
+        Ok(login_item_label(code))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = enabled;
+        Err("unsupported".to_string())
+    }
+}
+
+/// システム設定の「ログイン項目」を開く (許可待ちの時の案内)。
+#[tauri::command]
+fn open_login_items_settings() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        readapp_open_login_items_settings();
+    }
 }
 
 #[tauri::command]
@@ -1102,9 +1186,10 @@ const DUPLICATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(20)
 const SAME_ROUTE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// 経路ごとの区切りの差 (直接監視は「タイトル。本文」、部品は「タイトル\n本文」) だけを無視する。
+/// ショートカットからは分解形 (か+濁点) で届くことがあるので合成済みに揃える。
 /// 本文中の記号 (小数点など) は意味が変わるので残す。
 fn notification_key(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace() && *c != '。').collect()
+    notifications::nfc(text).chars().filter(|c| !c.is_whitespace() && *c != '。').collect()
 }
 
 /// 未読なら true (かつ既読化する)。窓内に「別の経路で」同じ通知を読んでいれば false。
@@ -1262,6 +1347,8 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
     // SAFETY: Swift側がNUL終端のUTF-8文字列を渡し、呼び出し中は有効。ここで所有文字列に写す。
     let app = unsafe { std::ffi::CStr::from_ptr(app) }.to_string_lossy().into_owned();
     let text = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy().into_owned();
+    // ショートカットの変数は分解形 (か+濁点) で届くことがある。変換・重複判定の前に揃える
+    let text = notifications::nfc(&text);
     std::thread::spawn(move || {
         // 部品から起動された直後はsetupの完了を待つ (最大5秒)
         let handle = (0..50).find_map(|_| {
@@ -1433,7 +1520,11 @@ pub fn run() {
             companion::set_companion_image,
             companion::show_companion,
             companion::show_settings,
-            companion::companion_open
+            companion::companion_open,
+            set_show_in_dock,
+            login_item_status,
+            set_login_item,
+            open_login_items_settings
         ])
         .setup(|app| {
             speech::system::set_app_handle(app.handle().clone());
@@ -1536,13 +1627,41 @@ pub fn run() {
         })
         .build(context)
         .expect("error while building tauri application")
-        .run(|_app, event| {
+        .run(|app, event| {
             // macOSのReopenには通知・AppIntentの起動も含まれる。
             // 設定を前面に出すのはメニューバーからの明示操作と初回案内だけ。
+            // Dockに出している時だけ、Dockのクリックで小窓を開く (通知の受け取り直後のReopenは除く)。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                if app.state::<AppSettings>().show_in_dock() {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        // 部品・URLからの起動なら、この間に受信の記録が入る
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                        if received_within(&app.state::<AppSettings>(), 3) {
+                            return;
+                        }
+                        let handle = app.clone();
+                        app.run_on_main_thread(move || companion::show_window(&handle, companion::WINDOW)).ok();
+                    });
+                }
+                return;
+            }
             if let tauri::RunEvent::Exit = event {
                 speech::system::set_enabled(false);
             }
         });
+}
+
+/// 直近 secs 秒以内に通知を受け取ったか (Dockのクリックと、通知によるReopenを見分ける)。
+#[cfg(target_os = "macos")]
+fn received_within(settings: &AppSettings, secs: u64) -> bool {
+    settings
+        .last_received
+        .lock()
+        .ok()
+        .and_then(|last| last.as_ref().map(|n| now_secs().saturating_sub(n.at) <= secs))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -1642,6 +1761,27 @@ mod tests {
         assert!(!saved.speech_enabled);
         let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
         assert!(old.speech_enabled);
+    }
+
+    #[test]
+    fn dock_icon_stays_hidden_by_default_and_round_trips() {
+        let settings = AppSettings::default();
+        assert!(!settings.show_in_dock());
+        *settings.show_in_dock.lock().unwrap() = true;
+        let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        assert!(serde_json::from_str::<SavedSettings>(&json).unwrap().show_in_dock);
+        // 旧形式 (項目なし) は今までどおりDockに出さない
+        let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
+        assert!(!old.show_in_dock);
+    }
+
+    #[test]
+    fn login_item_status_maps_to_plain_states() {
+        assert_eq!(login_item_label(1), "enabled");
+        assert_eq!(login_item_label(2), "requires_approval");
+        assert_eq!(login_item_label(0), "disabled");
+        assert_eq!(login_item_label(3), "disabled");
+        assert_eq!(login_item_label(-1), "unsupported");
     }
 
     #[test]
@@ -1800,6 +1940,15 @@ mod tests {
         assert!(fresh_notification(&settings, "slack", "了解。", Route::Direct));
         settings.recent_spoken.lock().unwrap()[0].at = std::time::Instant::now() - DUPLICATE_WINDOW;
         assert!(fresh_notification(&settings, "slack", "了解。", Route::Shortcut));
+    }
+
+    /// 試し読み上げの1通知が、ショートカット (分解形の本文) と直接監視 (合成済み) の両方から届く場合
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn decomposed_shortcut_text_matches_direct_capture() {
+        let settings = AppSettings::default();
+        assert!(fresh_notification(&settings, "readapp", "Claudeの作業か\u{3099}終わりました。", Route::Shortcut));
+        assert!(!accept_notification(&settings, "readapp", "", "Claudeの作業が終わりました。", Route::Direct));
     }
 
     #[test]

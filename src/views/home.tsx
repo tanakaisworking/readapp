@@ -4,8 +4,9 @@ import { Play, ShieldCheck, Volume2 } from "lucide-react";
 import { HomeAppList } from "@/components/home-app-list";
 import { HomeSpeech } from "@/components/home-speech";
 import { AppearanceSettings } from "@/components/appearance-settings";
+import { StartupSettings } from "@/components/startup-settings";
 import { MasAppList } from "@/components/mas-app-list";
-import { PersonaAvatar } from "@/components/persona-avatar";
+import { AppLogo } from "@/components/app-logo";
 import {
   CLOUD_VOICES,
   GEMINI_VOICES,
@@ -135,7 +136,7 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
         style={raw ? undefined : { backgroundColor: `color-mix(in oklab, ${accent} 13%, var(--color-base-100))` }}
       >
         <div className="flex items-start gap-3">
-          <PersonaAvatar accent={accent} raw={raw} size={52} speaking={speaking} dot={speaking} />
+          <AppLogo size={52} speaking={speaking} />
           <div className="min-w-0 flex-1 pt-0.5">
             <h1 className="truncate text-base font-semibold">{raw ? "そのまま読み上げ" : active?.name ?? "キャラを選択"}</h1>
             <p className="truncate text-xs text-muted">{raw ? "通知の文をそのまま読みます" : active?.tagline}</p>
@@ -206,6 +207,8 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
       <HomeSpeech api={api} state={state} personas={personas} voices={voices} voiceName={voiceName} platform={platform} edition={edition} speaking={speaking} onPreview={onPreview} onPickPersona={onPickPersona} />
 
       <AppearanceSettings />
+
+      {platform === "macos" && <StartupSettings api={api} state={state} />}
     </div>
   );
 }

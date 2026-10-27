@@ -54,6 +54,8 @@ export interface FullState {
   /** 読み上げの音量 (0〜100 %) */
   volume: number;
   onboarded: boolean;
+  /** Dockにアイコンを出す (macOS。既定は出さない) */
+  show_in_dock: boolean;
 }
 
 export const PERSONA_ACCENTS: Record<string, string> = {

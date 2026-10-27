@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CheckCircle2, Play } from "lucide-react";
 import { PersonaAvatar } from "@/components/persona-avatar";
+import { AppLogo } from "@/components/app-logo";
 import { PersonaPicker } from "@/components/persona-picker";
 import { AutomationSetup } from "@/components/automation-setup";
 import { personaAccent, speechSample, type Persona } from "@/lib/apps";
@@ -108,7 +109,7 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ type: "spring", stiffness: 380, damping: 22, delay: 0.08 }}
                 >
-                  <PersonaAvatar accent="#a996f3" size={96} dot />
+                  <AppLogo size={104} />
                 </motion.div>
                 <h1 className="mt-7 text-[26px] font-semibold leading-snug">
                   通知を、

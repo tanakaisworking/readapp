@@ -146,6 +146,11 @@ export function useSettings() {
     setState((s) => (s ? { ...s, onboarded: done } : s));
   }, []);
 
+  const setShowInDock = useCallback(async (show: boolean) => {
+    setState((s) => (s ? { ...s, show_in_dock: show } : s));
+    await invoke("set_show_in_dock", { show });
+  }, []);
+
   const speak = useCallback(
     async (appId: string, title: string, body: string): Promise<string> => {
       return invoke<string>("test_speak", { appId, title, body });
@@ -174,6 +179,7 @@ export function useSettings() {
     setAppVoice,
     setVolume,
     setOnboarded,
+    setShowInDock,
     speak,
   };
 }

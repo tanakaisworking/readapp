@@ -219,9 +219,15 @@ pub fn banner_from_parts(uid: &str, desc: &str, texts: &[(String, String)]) -> O
     if title.is_empty() && subtitle.is_empty() && body.is_empty() {
         return None;
     }
+    let app_name = app_name_from_description(desc);
+    // タイトルの無い通知は、バナーのタイトル欄にアプリ名が出る。アプリ名は別に渡すのでタイトルにしない
+    // (ショートカット経由の同じ通知と本文が揃い、重複として1回にまとまる)
+    if title == app_name && !(subtitle.is_empty() && body.is_empty()) {
+        title.clear();
+    }
     Some(Banner {
         uid: uid.to_string(),
-        app_name: app_name_from_description(desc),
+        app_name,
         title,
         subtitle,
         body: body.join("\n"),
@@ -505,6 +511,16 @@ mod tests {
     #[test]
     fn empty_banner_is_none() {
         assert!(banner_from_parts("U", "Slack", &[t("header", "即時通知")]).is_none());
+    }
+
+    #[test]
+    fn app_name_shown_as_title_is_not_read_as_title() {
+        let b = banner_from_parts("U", "readapp、Claudeの作業", &[t("title", "readapp"), t("body", "Claudeの作業")]).unwrap();
+        assert!(b.title.is_empty());
+        assert_eq!(b.body, "Claudeの作業");
+        // タイトルだけの通知はそのまま残す
+        let only = banner_from_parts("U", "Slack、Slack", &[t("title", "Slack")]).unwrap();
+        assert_eq!(only.title, "Slack");
     }
 
     #[test]

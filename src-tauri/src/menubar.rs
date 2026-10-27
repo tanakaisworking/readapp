@@ -168,8 +168,30 @@ pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
         toggle,
         status,
     });
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+    app.set_activation_policy(dock_policy(settings.show_in_dock()))?;
     Ok(())
+}
+
+fn dock_policy(show: bool) -> tauri::ActivationPolicy {
+    if show {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    }
+}
+
+/// Dockにアイコンを出す・隠す。切り替えでウィンドウが後ろに回らないよう、開いている設定を前に戻す。
+pub(crate) fn apply_dock_policy(app: &AppHandle, show: bool) {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        handle.set_activation_policy(dock_policy(show)).ok();
+        if let Some(window) = handle.get_webview_window("main") {
+            if window.is_visible().unwrap_or(false) {
+                window.set_focus().ok();
+            }
+        }
+    })
+    .ok();
 }
 
 pub(crate) fn sync(app: &AppHandle, enabled: bool, volume: u8) {
