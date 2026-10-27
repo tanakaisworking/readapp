@@ -8,10 +8,9 @@ import { Volume1, Volume2, VolumeX } from "lucide-react";
 interface Props {
   value: number;
   onCommit: (v: number) => void | Promise<void>;
-  embedded?: boolean;
 }
 
-export function VolumeSlider({ value, onCommit, embedded = false }: Props) {
+export function VolumeSlider({ value, onCommit }: Props) {
   const [draft, setDraft] = useState(value);
   // 最後に保存へ回した値。保存の応答が操作中の値を巻き戻したり、同じ値を二重に保存したりしないよう、これと比べる
   const committed = useRef(value);
@@ -29,15 +28,15 @@ export function VolumeSlider({ value, onCommit, embedded = false }: Props) {
   const Icon = draft === 0 ? VolumeX : draft < 50 ? Volume1 : Volume2;
 
   return (
-    <div className={embedded ? "mt-3" : "mt-3 rounded-lg bg-card px-3.5 py-3 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"}>
+    <div>
       <div className="flex items-center justify-between">
-        <label htmlFor="readapp-volume" className="text-sm font-medium">
+        <label htmlFor="readapp-volume" className="text-[13px] font-medium">
           音量
         </label>
-        <span className="text-xs tabular-nums text-muted-foreground">{draft === 0 ? "消音" : `${draft}%`}</span>
+        <span className="text-xs tabular-nums text-muted">{draft === 0 ? "消音" : `${draft}%`}</span>
       </div>
       <div className="mt-2 flex items-center gap-2.5">
-        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Icon className="size-4 shrink-0 text-muted" aria-hidden="true" />
         <input
           id="readapp-volume"
           type="range"
@@ -58,13 +57,11 @@ export function VolumeSlider({ value, onCommit, embedded = false }: Props) {
           onPointerUp={commit}
           onKeyUp={commit}
           onBlur={commit}
-          className="h-1.5 w-full cursor-pointer accent-primary"
+          className="range range-primary range-xs w-full"
         />
       </div>
       {draft > 0 && draft < 100 && (
-        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-          100%より小さくすると、読み始めが1〜2秒ほど遅れます。
-        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted">100%より小さくすると、読み始めが1〜2秒ほど遅れます。</p>
       )}
     </div>
   );

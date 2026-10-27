@@ -134,27 +134,32 @@ pub(crate) fn request() -> Option<SpeechRequest> {
 #[derive(Clone, Copy)]
 pub(crate) struct SpeechRequest(Request);
 
-fn queue() -> &'static mpsc::Sender<(String, String, SpeechRequest, Context)> {
-    static TX: OnceLock<mpsc::Sender<(String, String, SpeechRequest, Context)>> = OnceLock::new();
+/// 読み上げ1件 (文・声・要求・計測・小窓の行)
+type Job = (String, String, SpeechRequest, Context, u64);
+
+fn queue() -> &'static mpsc::Sender<Job> {
+    static TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
     TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(String, String, SpeechRequest, Context)>();
+        let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
-            for (text, voice, request, context) in rx {
+            for (text, voice, request, context, line) in rx {
                 if playback().accepts(request.0) {
+                    crate::companion::mark(line, crate::companion::LineState::Speaking);
                     speak_once(&text, &voice, playback().volume(), request, context);
                 }
+                crate::companion::mark(line, crate::companion::LineState::Done);
             }
         });
         tx
     })
 }
 
-/// 読み上げ要求をキューへ。停止前の要求・空文字は捨てる。
-pub(crate) fn speak(text: &str, voice: &str, request: SpeechRequest, context: Context) -> bool {
+/// 読み上げ要求をキューへ。停止前の要求・空文字は捨てる。line は小窓の行 (話し始め・終わりを伝える)。
+pub(crate) fn speak(text: &str, voice: &str, request: SpeechRequest, context: Context, line: u64) -> bool {
     if text.is_empty() || !playback().accepts(request.0) {
         return false;
     }
-    queue().send((text.to_string(), voice.to_string(), request, context)).is_ok()
+    queue().send((text.to_string(), voice.to_string(), request, context, line)).is_ok()
 }
 
 /// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。

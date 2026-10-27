@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[cfg(target_os = "macos")]
 mod menubar;
+mod companion;
 pub mod notifications;
 pub mod speech;
 pub mod subscription;
@@ -1154,7 +1155,13 @@ pub(crate) fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body:
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    speech::system::speak(&text, &settings.voice_for(app_id), request, telemetry::Context::new(app_id, trigger)).then_some(text)
+    // 小窓へ先に記録する (再生側の「話し始めた」より必ず先に行があるように)。読めなかったら消す。
+    let line = companion::record(app_id, label.as_deref(), &text);
+    let queued = speech::system::speak(&text, &settings.voice_for(app_id), request, telemetry::Context::new(app_id, trigger), line);
+    if !queued {
+        companion::discard(line);
+    }
+    queued.then_some(text)
 }
 
 /// 読み上げ前の整形: 不可視文字 (メールのプレビュー埋め草等) を消し、空白を詰め、
@@ -1297,9 +1304,9 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let context = {
         let mut context = context;
-        // 非表示でもWKWebView生成はアプリをactivateする。設定を開くまで生成しない。
+        // 非表示でもWKWebView生成はアプリをactivateする。設定・小窓は開くまで生成しない。
         for window in &mut context.config_mut().app.windows {
-            if window.label == "main" {
+            if window.label == "main" || window.label == companion::WINDOW {
                 window.create = false;
             }
         }
@@ -1316,6 +1323,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .on_window_event(|window, event| {
+            // 小窓は閉じても隠すだけにし、次の起動では開かない。
+            if window.label() == companion::WINDOW {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    window.hide().ok();
+                    companion::remember_open(window.app_handle(), false);
+                }
+                return;
+            }
             #[cfg(target_os = "macos")]
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1368,10 +1384,16 @@ pub fn run() {
             set_volume,
             set_onboarded,
             windows_ensure_access,
-            test_speak
+            test_speak,
+            companion::companion_feed,
+            companion::companion_image,
+            companion::set_companion_image,
+            companion::show_companion,
+            companion::show_settings
         ])
         .setup(|app| {
             speech::system::set_app_handle(app.handle().clone());
+            companion::set_app_handle(app.handle().clone());
             // 音量を下げた時の書き出しファイルが前回の異常終了で残っていれば消す (通知本文の音声のため)
             // 通知を受け付ける前に済ませる (今回の書き出しを消さないため)
             speech::system::remove_leftover_files();
@@ -1395,6 +1417,8 @@ pub fn run() {
                 menubar::install(&handle)?;
                 if !handle.state::<AppSettings>().onboarded.lock().map(|b| *b).unwrap_or(false) {
                     menubar::show_settings(&handle);
+                } else {
+                    companion::restore(&handle);
                 }
             }
             #[cfg(not(target_os = "macos"))]

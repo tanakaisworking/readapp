@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const URL: &str = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const MAX_RESPONSE: usize = 9_000_000;
 const MAX_AUDIO: usize = 6_000_000;
+/// プロジェクトの月の利用額の上限 (AI Studio の spend cap)。429で返るが、待っても翌月まで解けない。
+pub(crate) const SPEND_CAP: &str =
+    "自分のGeminiプロジェクトが月の利用額の上限に達しました。AI Studioで上限を確認してください";
 
 pub fn is_voice(id: &str) -> bool {
     id.strip_prefix("gemini:")
@@ -36,6 +39,11 @@ fn audio(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
         serde_json::from_slice(bytes).map_err(|_| "Geminiに接続できませんでした")?;
     if data.get("error").is_some() {
         let code = &data["error"]["code"];
+        // 本文は見分けに使うだけで、表示・ログには出さない。
+        let message = data["error"]["message"].as_str().unwrap_or_default();
+        if message.contains("spending cap") || message.contains("spend cap") {
+            return Err(SPEND_CAP);
+        }
         return Err(match (code.as_str(), code.as_u64()) {
             (Some("authentication" | "permission_denied"), _) | (_, Some(401 | 403)) => {
                 "GeminiのAPIキーや利用権限を確認してください"
@@ -246,6 +254,13 @@ mod tests {
                 .unwrap_err()
                 .contains("APIキー")
         );
+    }
+    #[test]
+    fn monthly_spend_cap_is_not_reported_as_a_temporary_limit() {
+        // 2026-10-27 に実際に返った応答と同じ形
+        let body = br#"{"error":{"code":"too_many_requests","message":"Your project has exceeded its monthly spending cap. Please go to AI Studio at https://ai.studio/spend to manage your project spend cap."}}"#;
+        assert_eq!(audio(body).unwrap_err(), SPEND_CAP);
+        assert_eq!(super::super::status::error_kind(SPEND_CAP), super::super::status::IssueKind::Billing);
     }
     #[test]
     fn temporary_audio_is_private_and_removed_on_drop() {

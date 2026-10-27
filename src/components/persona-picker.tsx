@@ -1,5 +1,5 @@
 import { Check } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
+import { PersonaAvatar } from "@/components/persona-avatar";
 import { personaAccent, type Persona } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -11,7 +11,6 @@ interface Props {
 }
 
 export function PersonaPicker({ personas, selected, onSelect, speaking }: Props) {
-  const reduce = useReducedMotion();
   return (
     <div className="grid grid-cols-2 gap-2">
       {personas.map((p) => {
@@ -24,29 +23,17 @@ export function PersonaPicker({ personas, selected, onSelect, speaking }: Props)
             onClick={() => onSelect(p.id)}
             aria-pressed={active}
             className={cn(
-              "rounded-lg bg-card p-3 text-left transition-all duration-150",
-              "outline-none hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50",
-              "shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
-              active && "ring-2 ring-primary/60",
+              "rounded-field border p-2.5 text-left transition-all duration-150 hover:-translate-y-px active:translate-y-0",
+              active ? "border-primary/45 bg-primary/8" : "border-base-300/80 bg-base-100 hover:border-base-content/20",
             )}
+            style={active ? { backgroundColor: `color-mix(in oklab, ${accent} 14%, var(--color-base-100))` } : undefined}
           >
             <span className="flex items-center gap-2">
-              <motion.span
-                animate={speaking && active && !reduce ? { scale: [1, 1.12, 1] } : { scale: 1 }}
-                transition={
-                  speaking && active
-                    ? { duration: 2, repeat: Infinity, ease: "easeInOut" }
-                    : { duration: 0.15 }
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold"
-                style={{ backgroundColor: `${accent}33`, color: "#29272d" }}
-              >
-                {p.name.slice(0, 1)}
-              </motion.span>
+              <PersonaAvatar accent={accent} size={30} speaking={speaking && active} />
               <span className="text-sm font-medium">{p.name}</span>
-              {active && <Check className="ml-auto h-4 w-4 text-primary" />}
+              <Check className={cn("ml-auto size-4 text-primary transition-opacity", active ? "opacity-100" : "opacity-0")} aria-hidden="true" />
             </span>
-            <span className="mt-1.5 block text-xs text-muted-foreground">{p.tagline}</span>
+            <span className="mt-1.5 block text-xs leading-snug text-muted">{p.tagline}</span>
           </button>
         );
       })}

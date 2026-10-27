@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { invoke } from "@tauri-apps/api/core";
 import { useSettings } from "@/hooks/useSettings";
 import { Home } from "@/views/home";
 import { AppDetail } from "@/views/app-detail";
@@ -29,15 +30,6 @@ function App() {
     }
   }, [state?.speech_enabled, state?.volume]);
 
-  // システムの外観に追従 (DESIGN.md ダークモード)
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => document.documentElement.classList.toggle("dark", mq.matches);
-    apply();
-    mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
-  }, []);
-
   const preview = useCallback(
     async (appId: string, title: string, body: string) => {
       if (api.state?.speech_enabled === false || api.state?.volume === 0) return;
@@ -62,11 +54,7 @@ function App() {
     return (
       <MotionConfig reducedMotion="user">
       <main className="flex min-h-screen items-center justify-center">
-        <motion.span
-          animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
-          transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
-          className="h-3 w-3 rounded-full bg-primary"
-        />
+        <span className="loading loading-dots loading-md text-primary" aria-label="読み込み中" />
       </main>
       </MotionConfig>
     );
@@ -83,7 +71,11 @@ function App() {
           speaking={speaking}
           onPreview={previewDefault}
           onPickDefaultPersona={(id) => void api.setPersona(id)}
-          onDone={() => void api.setOnboarded(true)}
+          onDone={() => {
+            void api.setOnboarded(true);
+            // 設定を終えたら、普段見せる小窓を出す
+            void invoke("show_companion").catch(() => {});
+          }}
         />
       </main>
       </MotionConfig>
@@ -93,7 +85,7 @@ function App() {
   return (
     <MotionConfig reducedMotion="user">
     <main className="min-h-screen">
-      {api.speechIssue && issueId !== dismissedIssue && <div className="mx-5 mt-3">
+      {api.speechIssue && issueId !== dismissedIssue && <div className="mx-4 mt-4">
         <SpeechIssueNotice issue={api.speechIssue} onDismiss={() => setDismissedIssue(issueId)}
           onUseSystem={state.voice === api.speechIssue.voice_id ? async () => { await api.setVoice("system"); setDismissedIssue(issueId); } : undefined} />
       </div>}

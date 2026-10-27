@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 
 interface Props {
@@ -6,45 +6,41 @@ interface Props {
   onClose: () => void;
 }
 
+// プレミアムの声を選んだ時だけ、下から小さく案内する。
 export function PremiumSheet({ voiceName, onClose }: Props) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  // 閉じるアニメーションの間も名前を残す
+  const [shown, setShown] = useState(voiceName);
+
+  useEffect(() => {
+    const d = dialog.current;
+    if (!d) return;
+    if (voiceName) {
+      setShown(voiceName);
+      if (!d.open) d.showModal();
+    } else if (d.open) {
+      d.close();
+    }
+  }, [voiceName]);
+
   return (
-    <AnimatePresence>
-      {voiceName && (
-        <>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            onClick={onClose}
-            className="fixed inset-0 z-40 bg-foreground/20"
-          />
-          <motion.div
-            initial={{ y: 48, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 48, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 420, damping: 36 }}
-            role="dialog"
-            aria-label="プレミアムの案内"
-            className="fixed inset-x-3 bottom-3 z-50 rounded-xl bg-card p-5 shadow-[0_8px_30px_rgba(41,39,45,0.14)]"
-          >
-            <p className="flex items-center gap-1.5 text-sm font-medium">
-              <Sparkles className="h-4 w-4 text-primary" />
-              {voiceName}はプレミアムの声です
-            </p>
-            <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
-              月500円のプランで順次お届けします。今は準備中なので、まずはシステム音声でお試しください。
-            </p>
-            <button
-              type="button"
-              onClick={onClose}
-              className="mt-4 h-9 w-full rounded-md bg-surface-muted text-sm font-medium outline-none transition-colors hover:brightness-97 focus-visible:ring-2 focus-visible:ring-primary/50"
-            >
-              とじる
-            </button>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
+    <dialog ref={dialog} className="modal modal-bottom" aria-labelledby="premium-title" onClose={onClose}>
+      {/* 開いた時は本体にフォーカスを置く (閉じるボタンに枠が出て重く見えないように) */}
+      <div className="modal-box rounded-t-[22px] bg-base-100 px-5 pb-5 pt-6 outline-none" tabIndex={-1} autoFocus>
+        <h3 id="premium-title" className="flex items-center gap-1.5 text-[15px] font-semibold">
+          <Sparkles className="size-4 text-primary" aria-hidden="true" />
+          {shown}はプレミアムの声です
+        </h3>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted">
+          月500円のプランで順次お届けします。今は準備中なので、まずはシステム音声でお試しください。
+        </p>
+        <form method="dialog" className="mt-5">
+          <button className="btn btn-block">とじる</button>
+        </form>
+      </div>
+      <form method="dialog" className="modal-backdrop">
+        <button tabIndex={-1} aria-hidden="true">とじる</button>
+      </form>
+    </dialog>
   );
 }

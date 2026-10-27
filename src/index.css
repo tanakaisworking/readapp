@@ -1,22 +1,84 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* daisyUIは readapp の独自テーマだけを使う (既定テーマの見た目をそのまま出さない)。 */
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
+}
 
-/* DESIGN.md のテーマ: 少し暖かい背景、真っ黒にしない foreground、薄い border */
-@theme {
-  --color-background: #faf9f7;
-  --color-card: #ffffff;
-  --color-surface-muted: #f3f1ee;
-
-  --color-foreground: #29272d;
-  --color-muted-foreground: #88838d;
-
+/* DESIGN.md: 少し暖かい背景、真っ黒にしない文字、ラベンダーは要所だけ、通知の点はアイコンと同じアンバー。 */
+@plugin "daisyui/theme" {
+  name: "readapp";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+  --color-base-100: #fefdfb;
+  --color-base-200: #f6f4f1;
+  --color-base-300: #e9e5e0;
+  --color-base-content: #29272d;
   --color-primary: #745de8;
-  --color-primary-soft: #eeeaff;
+  --color-primary-content: #fcfbff;
+  --color-secondary: #f2a7c3;
+  --color-secondary-content: #3a1d29;
+  --color-accent: #e9b35c;
+  --color-accent-content: #3b2a10;
+  --color-neutral: #3a3640;
+  --color-neutral-content: #f6f4f1;
+  --color-info: #4f7fd8;
+  --color-info-content: #ffffff;
+  --color-success: #2f8a57;
+  --color-success-content: #ffffff;
+  --color-warning: #9c6414;
+  --color-warning-content: #ffffff;
+  --color-error: #c8473f;
+  --color-error-content: #ffffff;
+  --radius-selector: 1rem;
+  --radius-field: 0.8125rem;
+  --radius-box: 1.125rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+}
 
-  --color-border: #e7e3de;
-  --color-warning: #916324;
-  --color-warning-soft: #f6efdf;
+@plugin "daisyui/theme" {
+  name: "readapp-dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: #2b2932;
+  --color-base-200: #222027;
+  --color-base-300: #3a3743;
+  --color-base-content: #ece9e4;
+  --color-primary: #a08ef2;
+  --color-primary-content: #1d1730;
+  --color-secondary: #e79bb8;
+  --color-secondary-content: #2e1520;
+  --color-accent: #eac686;
+  --color-accent-content: #33260f;
+  --color-neutral: #e0dcd6;
+  --color-neutral-content: #222027;
+  --color-info: #8fb4f5;
+  --color-info-content: #102340;
+  --color-success: #6cc893;
+  --color-success-content: #0f2a1b;
+  --color-warning: #eac686;
+  --color-warning-content: #33260f;
+  --color-error: #f08a84;
+  --color-error-content: #3a1210;
+  --radius-selector: 1rem;
+  --radius-field: 0.8125rem;
+  --radius-box: 1.125rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
 
   /* 角は柔らかく (small 10 / button 13 / card 18 / panel 22) */
   --radius-sm: 10px;
@@ -25,49 +87,71 @@
   --radius-xl: 22px;
 }
 
-.dark {
-  --color-background: #211f26;
-  --color-card: #2a2831;
-  --color-surface-muted: #322f3a;
-
-  --color-foreground: #ece9e4;
-  --color-muted-foreground: #a09aa8;
-
-  --color-primary: #9a86f0;
-  --color-primary-soft: #3a3352;
-  --color-warning: #eac686;
-  --color-warning-soft: #3b3329;
-
-  --color-border: #3d3a46;
+/* 補足の文字色。背景との差を本文向けのコントラストに保つ */
+@theme inline {
+  --color-muted: color-mix(in oklab, var(--color-base-content) 66%, var(--color-base-100));
 }
 
 @layer base {
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-base-200 text-base-content antialiased;
+    line-break: strict;
+    overflow-wrap: break-word;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-feature-settings: "palt";
+    letter-spacing: 0.02em;
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-primary) 65%, transparent);
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  .disclosure-summary {
-    @apply flex cursor-pointer list-none items-center gap-1.5 rounded-sm py-1 text-[13px] font-medium outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/50;
+  /* 画面の区切り見出し */
+  .section-label {
+    @apply px-1 text-xs font-semibold text-muted;
+    letter-spacing: 0.06em;
   }
 
-  .disclosure-summary::-webkit-details-marker {
-    display: none;
+  /* 背景からほんの少し浮くカード。線で区切らず、面の差と影で分ける */
+  .surface {
+    @apply rounded-box bg-base-100;
+    box-shadow:
+      0 1px 2px rgb(41 39 45 / 0.06),
+      0 0 0 1px rgb(41 39 45 / 0.035);
   }
 
-  .disclosure-summary::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    margin-right: 4px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: rotate(-45deg);
-    flex-shrink: 0;
+  .btn > svg {
+    @apply size-4 shrink-0;
   }
+  .btn-sm > svg,
+  .btn-xs > svg {
+    @apply size-3.5;
+  }
+}
 
-  details[open] > .disclosure-summary::before {
-    transform: rotate(45deg);
-  }
+/* 小さいウィンドウ向けに詰めた折りたたみ。
+   daisyUIの summary { display: list-item } はレイヤー外にあるため、こちらもレイヤー外に置く。 */
+.collapse-compact > .collapse-title {
+  @apply flex min-h-0 list-none items-center gap-2 py-3 ps-4 pe-10 text-[13px] font-medium;
+}
+.collapse-compact > .collapse-title::-webkit-details-marker {
+  display: none;
+}
+.collapse-compact > .collapse-content {
+  @apply px-4 text-[13px];
+}
+
+/* オンのスイッチは中まで塗り、ひと目で状態が分かるようにする (macOSのスイッチに寄せる) */
+.toggle-primary:checked {
+  background-color: var(--color-primary);
+}
+.toggle-primary:checked::before {
+  background-color: var(--color-primary-content);
 }

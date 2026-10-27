@@ -65,7 +65,7 @@ Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）�
 ## 技術スタック
 
 - フレームワーク: Tauri 2
-- フロント: React + shadcn/ui（バニラ構成。余計なUIライブラリを積まずshadcn標準に寄せる）
+- フロント: React + Tailwind CSS + daisyUI（独自テーマ `readapp`。見た目の方針は DESIGN.md）
 - コア: Rust（OS差分はすべてRust側に隠す）
 - ローカル変換: macOS版は Apple Foundation Models、Windows版は Aion Instruct / Phi Silica / Foundry Local
 - TTS: OS標準音声（無料）、Premium音声はサーバー側API
@@ -77,7 +77,8 @@ UIは設定画面中心で軽く、コア処理はネイティブ寄り。OS差�
 
 ### フロント（src/）
 
-- `UI/` — shadcn/ui ベースの設定画面
+- `UI/` — daisyUI ベースの設定画面
+- 普段見せる小窓（`src/views/companion.tsx`）と設定ウィンドウ（`src/App.tsx`）を、同じフロントをウィンドウ名で切り替えて出す。読み上げた文は `src-tauri/src/companion.rs` が直近分だけメモリに持ち、`companion-line` イベントで小窓へ送る
 - `settings/` — アプリ別ON/OFF、音声設定
 - `personas/` — キャラ定義
 - `voices/` — 音声プリセット
@@ -104,7 +105,7 @@ OS差分はRust側のnotifications/とtransform/に閉じ込める。フロン�
 3. アプリ別ON/OFF設定
 4. テキスト変換（まずはローカルAIでのキャラ口調変換）
 5. TTS読み上げ（OS標準音声）
-6. 最小の設定UI（shadcn/ui）
+6. 最小の設定UI（daisyUI）
 
 ホーム先頭の「読み上げ」をオフにすると、再生中の音声を即時停止し、待機中・変換中の読み上げも破棄する。再びオンにしても停止前の通知は再生しない。音量を0にした場合も同じ停止処理を行う。全体のオン・オフは保存され、アプリ再起動後も維持する。通話中の自動停止は未実装。
 

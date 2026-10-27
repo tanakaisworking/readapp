@@ -20,7 +20,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path alias (shadcn: @/*) */
+    /* Path alias (@/* → src/*) */
     "paths": {
       "@/*": ["./src/*"]
     }

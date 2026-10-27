@@ -134,10 +134,15 @@ pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
+    let companion_item =
+        MenuItem::with_id(app, "readapp-companion", "小窓を表示", true, None::<&str>)?;
     let settings_item =
         MenuItem::with_id(app, "readapp-settings", "設定を開く…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "readapp-quit", "終了", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &status, &separator, &settings_item, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&toggle, &status, &separator, &companion_item, &settings_item, &quit],
+    )?;
     let tray = TrayIconBuilder::with_id("readapp-menubar")
         .icon(icon(enabled && volume > 0))
         .icon_as_template(true)
@@ -149,6 +154,7 @@ pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
                 let settings = app.state::<AppSettings>();
                 settings.change_speech_enabled(!settings.speech_enabled());
             }
+            "readapp-companion" => crate::companion::show_window(app, crate::companion::WINDOW),
             "readapp-settings" => show_settings(app),
             "readapp-quit" => {
                 crate::speech::system::set_enabled(false);
@@ -182,28 +188,7 @@ pub(crate) fn sync(app: &AppHandle, enabled: bool, volume: u8) {
 }
 
 pub(crate) fn show_settings(app: &AppHandle) {
-    let result = (|| -> tauri::Result<()> {
-        let window = match app.get_webview_window("main") {
-            Some(window) => window,
-            None => {
-                let config = app
-                    .config()
-                    .app
-                    .windows
-                    .iter()
-                    .find(|w| w.label == "main")
-                    .ok_or(tauri::Error::WindowNotFound)?;
-                tauri::WebviewWindowBuilder::from_config(app, config)?.build()?
-            }
-        };
-        window.unminimize()?;
-        window.show()?;
-        window.set_focus()?;
-        Ok(())
-    })();
-    if let Err(error) = result {
-        eprintln!("設定画面を開けませんでした: {error}");
-    }
+    crate::companion::show_window(app, "main");
 }
 
 #[cfg(test)]

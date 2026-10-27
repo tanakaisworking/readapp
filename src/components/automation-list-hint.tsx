@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button } from "@/components/ui/button";
 
 // オートメーションのスイッチは、ショートカットの「オートメーション」一覧にしかない (編集画面では切り替えられない)。
 // 一覧を直接開くURLは無く、サンドボックスからキー操作も送れないため、
@@ -11,7 +10,7 @@ import { Button } from "@/components/ui/button";
 
 function Kbd({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] bg-card px-1 font-sans text-[11px] font-medium text-foreground shadow-[0_1px_0_rgba(41,39,45,0.15)]">
+    <kbd className="kbd kbd-xs">
       {children}
     </kbd>
   );
@@ -20,11 +19,11 @@ function Kbd({ children }: { children: string }) {
 export function AutomationListHint() {
   const [failed, setFailed] = useState(false);
   return (
-    <div className="mt-2.5 rounded-md bg-surface-muted p-2.5 text-xs leading-relaxed text-muted-foreground">
+    <div className="mt-2.5 rounded-field bg-base-200 p-2.5 text-xs leading-relaxed text-muted">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <Button
-          size="sm"
-          variant="outline"
+        <button
+          type="button"
+          className="btn btn-sm"
           onClick={() =>
             void invoke("open_shortcuts_app")
               .then(() => setFailed(false))
@@ -33,7 +32,7 @@ export function AutomationListHint() {
         >
           <ExternalLink />
           ショートカットを開く
-        </Button>
+        </button>
         <span
           className="inline-flex flex-wrap items-center gap-1"
           aria-label="開いたら command 0 を押してから option shift command A でオートメーション一覧へ"

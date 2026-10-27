@@ -35,7 +35,8 @@ impl SpeechIssue {
             | "この端末のクラウド音声接続を設定してください" => {
                 IssueKind::Authentication
             }
-            "自分のGeminiプロジェクトの課金設定や残高を確認してください" => {
+            "自分のGeminiプロジェクトの課金設定や残高を確認してください"
+            | super::gemini::SPEND_CAP => {
                 IssueKind::Billing
             }
             _ => IssueKind::Connection,

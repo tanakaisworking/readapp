@@ -3,11 +3,10 @@ import { Check, ExternalLink, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Button } from "@/components/ui/button";
+import { AppAvatar } from "@/components/app-avatar";
 import { AutomationSetup } from "@/components/automation-setup";
 import { AutomationListHint } from "@/components/automation-list-hint";
 import { knownApp } from "@/lib/apps";
-import { cn } from "@/lib/utils";
 
 // MAS版「読み上げるアプリ」。
 // このMacに入っている有名アプリごとに、そのアプリだけが通知元の通知オートメーションを1クリックで追加する。
@@ -133,33 +132,27 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
     const ok = app.added && (setup[app.id]?.verified ?? false);
     const status = ok ? "受け取っています" : app.added ? "ショートカットでオンにしてください" : "まだ追加していません";
     return (
-      <li
-        key={app.id}
-        className="flex items-center gap-3 rounded-lg bg-card px-3.5 py-2 shadow-[0_1px_2px_rgba(41,39,45,0.06)]"
-      >
-        <span
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-semibold"
-          style={{ backgroundColor: `${knownApp(app.id).color}2e` }}
-          aria-hidden="true"
-        >
-          {app.name.slice(0, 1)}
-        </span>
+      <li key={app.id} className="list-row items-center gap-3 px-3 py-2">
         <button
           type="button"
           onClick={() => onOpenApp(app.id)}
           aria-label={`${app.name}の設定を開く`}
-          className="min-w-0 flex-1 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          className="list-col-grow -my-1 flex min-w-0 items-center gap-3 rounded-field py-1 text-left"
         >
-          <span className="block truncate text-sm font-medium">{app.name}</span>
-          <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-            {ok && <Check className="h-3 w-3 text-emerald-500" strokeWidth={3} aria-hidden="true" />}
-            {status}
-            {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
+          <AppAvatar name={app.name} color={knownApp(app.id).color} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium">{app.name}</span>
+            <span className="flex items-center gap-1 truncate text-xs text-muted">
+              {ok && <Check className="size-3 text-success" strokeWidth={3} aria-hidden="true" />}
+              {status}
+              {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
+            </span>
           </span>
         </button>
         {!app.added ? (
-          <Button
-            size="sm"
+          <button
+            type="button"
+            className="btn btn-primary btn-soft btn-sm"
             onClick={() => {
               addStartedAt.current[app.id] = Math.floor(Date.now() / 1000);
               void run(
@@ -169,14 +162,14 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
               );
             }}
           >
-            <Plus />
+            <Plus aria-hidden="true" />
             追加
-          </Button>
+          </button>
         ) : (
           !ok && (
-            <Button
-              size="sm"
-              variant="outline"
+            <button
+              type="button"
+              className="btn btn-sm"
               onClick={() =>
                 void run(
                   "open_shortcuts_app",
@@ -185,9 +178,9 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
                 )
               }
             >
-              <ExternalLink />
+              <ExternalLink aria-hidden="true" />
               開く
-            </Button>
+            </button>
           )
         )}
       </li>
@@ -195,51 +188,55 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
   };
 
   return (
-    <div>
+    <div className="space-y-2">
       {apps === null ? (
-        <p className="text-[13px] text-muted-foreground">アプリを調べています…</p>
+        <div className="surface flex items-center gap-2 px-4 py-3.5 text-[13px] text-muted">
+          <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+          アプリを調べています…
+        </div>
       ) : apps.length === 0 ? (
-        <p className="text-[13px] leading-relaxed text-muted-foreground">
-          一覧にあるアプリが見つかりませんでした。下の「ほかのアプリ」から追加できます。
+        <p className="surface px-4 py-3.5 text-[13px] leading-relaxed text-muted">
+          一覧にあるアプリが見つかりませんでした。下の「ほかのアプリを読み上げる」から追加できます。
         </p>
       ) : (
-        <>
-          <ul className="space-y-1.5">
-            {ordered.slice(0, 4).map(appRow)}
-          </ul>
+        <div className="surface">
+          <ul className="list">{ordered.slice(0, 4).map(appRow)}</ul>
           {ordered.length > 4 && (
-            <details className="mt-2">
-              <summary className="disclosure-summary">すべてのアプリ<span className="ml-auto text-xs font-normal text-muted-foreground">{ordered.length}件</span></summary>
-              <ul className="mt-2 space-y-1.5">{ordered.slice(4).map(appRow)}</ul>
+            <details className="collapse collapse-arrow collapse-compact rounded-none rounded-b-box border-t border-base-200">
+              <summary className="collapse-title">
+                すべてのアプリ
+                <span className="ml-auto text-xs font-normal text-muted">{ordered.length}件</span>
+              </summary>
+              <div className="collapse-content">
+                <ul className="list -mx-4">{ordered.slice(4).map(appRow)}</ul>
+              </div>
             </details>
           )}
-        </>
+        </div>
       )}
 
-      <details className="mt-3">
-        <summary className="disclosure-summary">アプリの設定方法</summary>
-        <div className="mt-2 rounded-lg bg-surface-muted px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
+      {error && (
+        <p className="px-1 text-xs text-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <details className="collapse collapse-arrow collapse-compact surface">
+        <summary className="collapse-title">アプリの設定方法</summary>
+        <div className="collapse-content text-xs leading-relaxed text-muted">
           「追加」でショートカットが開いたら「ショートカットを追加」を押します。次にショートカットの「オートメーション」一覧で、そのアプリの行の右端のスイッチをオンにします。
           そのアプリの通知が届くと「受け取っています」になります。
           <AutomationListHint />
         </div>
       </details>
 
-      {error && (
-        <p className={cn("mt-2 text-xs text-muted-foreground")} role="alert">
-          {error}
-        </p>
-      )}
-
-      <details className="mt-3">
-        <summary className="disclosure-summary">
-          ほかのアプリを読み上げる
-        </summary>
-        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          一覧にないアプリは、まとめ用のショートカットに「＋」で足します。
-        </p>
-        <div className="mt-3">
-          <AutomationSetup />
+      <details className="collapse collapse-arrow collapse-compact surface">
+        <summary className="collapse-title">ほかのアプリを読み上げる</summary>
+        <div className="collapse-content">
+          <p className="text-xs leading-relaxed text-muted">一覧にないアプリは、まとめ用のショートカットに「＋」で足します。</p>
+          <div className="mt-3">
+            <AutomationSetup />
+          </div>
         </div>
       </details>
     </div>

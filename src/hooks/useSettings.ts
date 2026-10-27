@@ -10,6 +10,15 @@ export interface SpeechIssue {
   message: string;
 }
 
+/** 自分のGeminiプロジェクトの月の利用額の上限 (Rust側 gemini::SPEND_CAP と同じ文) */
+export const SPEND_CAP_MESSAGE = "自分のGeminiプロジェクトが月の利用額の上限に達しました。AI Studioで上限を確認してください";
+
+/** 状態の短い表示 (バッジ用) */
+export function issueBadge(issue: SpeechIssue): string {
+  if (issue.message === SPEND_CAP_MESSAGE) return "利用額の上限";
+  return { quota: "使用上限", billing: "課金を確認", authentication: "キーを確認", connection: "接続を確認" }[issue.kind];
+}
+
 export function useSettings() {
   const [state, setState] = useState<FullState | null>(null);
   const [platform, setPlatform] = useState("macos");

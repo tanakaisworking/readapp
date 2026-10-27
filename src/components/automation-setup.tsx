@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, Check, ExternalLink, Keyboard, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button } from "@/components/ui/button";
 import { AutomationListHint } from "@/components/automation-list-hint";
 import { cn } from "@/lib/utils";
 
@@ -177,12 +176,12 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
           <p>ショートカットが開いたら「ショートカットを追加」を押します。</p>
           <MockAdd />
           <div className="mt-3 flex items-center gap-2">
-            <Button size="sm" onClick={() => void add()}>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => void add()}>
               <Plus />
               追加する
-            </Button>
+            </button>
             {waitingAdd && (
-              <span className="text-xs text-muted-foreground" role="status">
+              <span className="text-xs text-muted" role="status">
                 追加を待っています…
               </span>
             )}
@@ -200,18 +199,19 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
           </p>
           <MockApps />
           <div className="mt-3 flex items-center gap-2">
-            <Button
-              size="sm"
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
               onClick={() =>
                 void run("open_notify_automation", "開けませんでした。ショートカットで「" + AUTOMATION + "」を開いてください。")
               }
             >
               <ExternalLink />
               開く
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setStage(2)}>
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setStage(2)}>
               選んだ
-            </Button>
+            </button>
           </div>
         </>
       ),
@@ -231,8 +231,9 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
           <AutomationListHint />
           <p className="mt-2 text-xs">初回は右上に「readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
               onClick={async () => {
                 try {
                   await invoke("send_test_notification");
@@ -250,14 +251,14 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
             >
               <Bell />
               テスト通知
-            </Button>
+            </button>
           </div>
           {testSent && !done && (
             <p className="mt-2 text-xs" role="status">
               送りました。読み上げられない時は、ショートカットでスイッチがオンかを確かめてください。
               <button
                 type="button"
-                className="ml-1 underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/50"
+                className="ml-1 underline underline-offset-2 outline-none hover:text-base-content focus-visible:ring-2 focus-visible:ring-primary/50"
                 onClick={() => setStage(3)}
               >
                 確認せずに進む
@@ -285,28 +286,28 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
               tabIndex={-1}
               aria-current={current ? "step" : undefined}
               className={cn(
-                "rounded-lg px-3.5 py-3 outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-primary/50",
-                current ? "bg-card shadow-[0_1px_2px_rgba(41,39,45,0.08)] ring-1 ring-primary/30" : "bg-surface-muted/60",
+                "rounded-box px-3.5 py-3 outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-primary/50",
+                current ? "surface ring-1 ring-primary/30" : "bg-base-100/50",
               )}
             >
               <div className="flex items-center gap-2.5">
                 <span
                   className={cn(
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
-                    finished ? "bg-emerald-500 text-white" : current ? "bg-primary text-white" : "bg-border text-muted-foreground",
+                    finished ? "bg-success text-success-content" : current ? "bg-primary text-primary-content" : "bg-base-300 text-muted",
                   )}
                   aria-hidden="true"
                 >
                   {finished ? <Check className="h-3 w-3" strokeWidth={3} /> : order + 1}
                 </span>
                 <span className="text-[13px] font-medium">{step.title}</span>
-                {finished && <span className="ml-auto text-xs text-muted-foreground">{step.doneLabel}</span>}
+                {finished && <span className="ml-auto text-xs text-muted">{step.doneLabel}</span>}
               </div>
               {/* 流れ全体を最初から見せる。今やるステップはカードの背景と枠で示し、文字は薄くしない (読みやすさ)。
                   操作は今のステップだけ (先のボタンで段階を飛ばさないように)。 */}
               <fieldset
                 disabled={!current}
-                className="mt-2 min-w-0 pl-[30px] text-[13px] leading-relaxed text-muted-foreground"
+                className="mt-2 min-w-0 pl-[30px] text-[13px] leading-relaxed text-muted"
               >
                 {step.body}
               </fieldset>
@@ -319,14 +320,14 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
         <div
           ref={doneRef}
           tabIndex={-1}
-          className="mt-3 rounded-lg bg-primary-soft px-3.5 py-3 outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+          className="mt-3 rounded-box bg-primary/10 px-3.5 py-3 outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
           role="status"
         >
-          <p className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
-            <Check className="h-4 w-4 text-emerald-500" strokeWidth={3} />
+          <p className="flex items-center gap-1.5 text-[13px] font-medium text-base-content">
+            <Check className="h-4 w-4 text-success" strokeWidth={3} />
             {practice && !received ? "設定を入れました" : "準備ができました"}
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          <p className="mt-1 text-xs leading-relaxed text-muted">
             {practice
               ? received
                 ? "readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
@@ -337,26 +338,26 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
           </p>
           {!practice && (
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="outline"
+            <button
+              type="button"
+              className="btn btn-sm"
               onClick={() =>
                 void run("open_notify_automation", "開けませんでした。ショートカットで「" + AUTOMATION + "」を開いてください。")
               }
             >
               <ExternalLink />
               アプリを変える
-            </Button>
-            <Button size="sm" variant="ghost" onClick={restart}>
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={restart}>
               最初から設定する
-            </Button>
+            </button>
           </div>
           )}
         </div>
       )}
 
       {error && (
-        <p className="mt-2 text-xs text-muted-foreground" role="alert">
+        <p className="mt-2 text-xs text-muted" role="alert">
           {error}
         </p>
       )}
@@ -368,7 +369,7 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
 
 function MockFrame({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="mt-2.5 rounded-md bg-surface-muted p-2.5" role="img" aria-label={label}>
+    <div className="mt-2.5 rounded-field bg-base-200 p-2.5" role="img" aria-label={label}>
       {children}
     </div>
   );
@@ -393,7 +394,7 @@ function MockAdd() {
           <Keyboard className="h-4 w-4" />
         </span>
         <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-foreground">{AUTOMATION}</p>
+          <p className="truncate text-xs font-semibold text-base-content">{AUTOMATION}</p>
           <span
             className="mt-1 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium text-white ring-2"
             style={{ backgroundColor: SHORTCUTS_BLUE, ["--tw-ring-color" as string]: `${SHORTCUTS_BLUE}55` }}
@@ -409,7 +410,7 @@ function MockAdd() {
 function MockApps() {
   return (
     <MockFrame label="通知オートメーションの設定。readappの横の「＋」を押して読み上げたいアプリを足す">
-      <p className="flex flex-wrap items-center gap-1 text-[11px] text-foreground">
+      <p className="flex flex-wrap items-center gap-1 text-[11px] text-base-content">
         <Bell className="h-3.5 w-3.5 text-rose-500" aria-hidden="true" />
         <span className="font-medium" style={{ color: SHORTCUTS_BLUE }}>
           readapp
@@ -427,8 +428,8 @@ function MockToggle() {
       <div className="flex items-center gap-2 text-[11px]">
         <Bell className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-hidden="true" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium text-foreground">readappからの通知を受け取ったとき</span>
-          <span className="block truncate text-[10px] text-muted-foreground">{AUTOMATION}</span>
+          <span className="block truncate font-medium text-base-content">readappからの通知を受け取ったとき</span>
+          <span className="block truncate text-[10px] text-muted">{AUTOMATION}</span>
         </span>
         <span
           className="relative h-4 w-7 shrink-0 rounded-full ring-2"

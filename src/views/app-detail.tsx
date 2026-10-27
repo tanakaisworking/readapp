@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
+import { AppAvatar } from "@/components/app-avatar";
+import { VoiceOption } from "@/components/voice-option";
 import { knownApp, GEMINI_VOICES } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
-import { cn } from "@/lib/utils";
 
 interface Props {
   api: SettingsApi;
@@ -111,111 +110,102 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
     }
   };
 
+  const shortcutBadge = linked
+    ? { label: "つながっています", tone: "badge-success" }
+    : installed
+      ? { label: "登録済み", tone: "badge-primary" }
+      : { label: "未登録", tone: "badge-ghost" };
+  const voiceChoices = [
+    { id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" },
+    ...(api.geminiByok?.configured || appVoice?.startsWith("gemini:")
+      ? GEMINI_VOICES.map((v) => ({ id: v.id as string | null, name: v.name, note: "Gemini · 自分のAPIキー" }))
+      : []),
+    ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" })),
+  ];
+
   return (
-    <div className="px-5 pb-5 pt-4">
-      <header className="flex items-center gap-1">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="もどる"
-          className="rounded-md p-1.5 outline-none transition-colors hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-primary/50"
-        >
-          <ChevronLeft className="h-5 w-5" />
+    <div className="space-y-5 px-4 pb-6 pt-3">
+      <header className="flex items-center gap-1.5">
+        <button type="button" onClick={onBack} aria-label="もどる" className="btn btn-ghost btn-sm btn-circle -ms-1">
+          <ChevronLeft className="size-5" aria-hidden="true" />
         </button>
-        <h1 className="text-[15px] font-semibold">{appName}</h1>
+        <h1 className="truncate text-base font-semibold">{appName}</h1>
       </header>
 
-      <section aria-label="読み上げ" className="mt-3 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-        <div className="flex items-center justify-between">
-          <div>
+      <section aria-label="読み上げ" className="surface p-4">
+        <div className="flex items-center gap-3">
+          <AppAvatar name={appName} color={app.color} large />
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">読み上げる</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {on ? "通知が来たら声でお知らせ" : "今は読み上げません"}
-            </p>
+            <p className="mt-0.5 text-xs text-muted">{on ? "通知が来たら声でお知らせ" : "今は読み上げません"}</p>
           </div>
-          <Switch checked={on} onChange={(v) => void api.setEnabled(appId, v)} label={`${appName}の読み上げ`} />
+          <input
+            type="checkbox"
+            role="switch"
+            className="toggle toggle-primary"
+            checked={on}
+            onChange={(e) => void api.setEnabled(appId, e.target.checked)}
+            aria-label={`${appName}の読み上げ`}
+          />
         </div>
+        {on && (
+          <button type="button" className="btn btn-primary btn-block mt-4" onClick={() => onPreviewApp(appId)} disabled={speaking}>
+            {speaking ? <span className="loading loading-dots loading-xs" aria-hidden="true" /> : <Play aria-hidden="true" />}
+            {speaking ? "話しています" : "試しに喋る"}
+          </button>
+        )}
       </section>
 
       {on && (
         <>
-          <Button className="mt-4 w-full" onClick={() => onPreviewApp(appId)} disabled={speaking}>
-            <Play className="h-4 w-4" />
-            試しに喋る
-          </Button>
-
-          <section aria-label="このアプリの声" className="mt-5">
-            <h2 className="text-xs font-medium text-muted-foreground">このアプリの声</h2>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              {appName}の通知だけ、別の声で読み上げられます。
-            </p>
-            <ul className="mt-2 space-y-1.5">
-              {[{ id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" },
-                ...(api.geminiByok?.configured || appVoice?.startsWith("gemini:") ? GEMINI_VOICES.map((v) => ({ id: v.id as string | null, name: v.name, note: "Gemini · 自分のAPIキー" })) : []),
-                ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" }))].map((v) => {
-                const selected = appVoice === v.id;
-                return (
-                  <li key={v.id ?? "default"}>
-                    <button
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => void pickVoice(v.id)}
-                      disabled={speaking || !!v.id?.startsWith("gemini:") && !api.geminiByok?.configured}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-lg bg-card px-3.5 py-2.5 text-left outline-none transition-all duration-150 hover:-translate-y-px focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-60 shadow-[0_1px_2px_rgba(41,39,45,0.06)]",
-                        selected && "ring-2 ring-primary/60",
-                      )}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium">{v.name}</span>
-                        {v.note && <span className="block text-xs text-muted-foreground">{v.note}</span>}
-                      </span>
-                      {selected && <Check className="h-4 w-4 text-primary" aria-hidden="true" />}
-                    </button>
-                  </li>
-                );
-              })}
+          <section aria-labelledby="app-voice-heading">
+            <h2 id="app-voice-heading" className="section-label">このアプリの声</h2>
+            <p className="mt-1 px-1 text-xs leading-relaxed text-muted">{appName}の通知だけ、別の声で読み上げられます。</p>
+            <ul className="surface mt-2 space-y-0.5 p-1.5">
+              {voiceChoices.map((v) => (
+                <VoiceOption
+                  key={v.id ?? "default"}
+                  name={v.name}
+                  note={v.note}
+                  selected={appVoice === v.id}
+                  disabled={speaking || (!!v.id?.startsWith("gemini:") && !api.geminiByok?.configured)}
+                  onSelect={() => void pickVoice(v.id)}
+                />
+              ))}
             </ul>
           </section>
 
           {platform === "macos" && edition !== "mas" && !axOn && (
-            <section aria-label="ショートカット" className="mt-4">
-              <h2 className="text-xs font-medium text-muted-foreground">ショートカット</h2>
-              <div className="mt-2 rounded-xl bg-card p-4 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-                <p className="flex items-center gap-1.5 text-[13px] font-medium">
-                  {linked ? (
-                    <>
-                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                      つながっています
-                    </>
-                  ) : installed ? (
-                    "登録済みです"
-                  ) : (
-                    "まだ登録されていません"
+            <section aria-labelledby="app-shortcut-heading">
+              <h2 id="app-shortcut-heading" className="section-label">ショートカット</h2>
+              <div className="surface mt-2 p-4">
+                <div className="flex items-center gap-2">
+                  <span className={`badge badge-soft badge-sm ${shortcutBadge.tone}`}>
+                    {linked && <CheckCircle2 className="size-3" aria-hidden="true" />}
+                    {shortcutBadge.label}
+                  </span>
+                  {checking && (
+                    <span className="flex items-center gap-1.5 text-xs text-muted" role="status">
+                      <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+                      確認中…
+                    </span>
                   )}
-                </p>
-                {checking && (
-                  <p className="mt-2 text-xs text-muted-foreground">確認中…</p>
-                )}
+                </div>
                 {installed === null ? null : installed ? (
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+                  <p className="mt-2 text-[13px] leading-relaxed text-muted">
                     通知オートメーションで「ショートカットを実行」を選べば、このアプリの通知が届きます。
                   </p>
                 ) : (
                   <>
-                    <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+                    <p className="mt-2 text-[13px] leading-relaxed text-muted">
                       ダウンロード→ダブルクリックで登録し、通知オートメーションで「ショートカットを実行」を選ぶだけです。
                     </p>
-                    <div className="mt-3 flex gap-2">
-                      <Button className="flex-1" variant="outline" onClick={() => void download()}>
-                        <Download className="h-4 w-4" />
-                        ダウンロード
-                      </Button>
-                    </div>
+                    <button type="button" className="btn btn-sm btn-block mt-3" onClick={() => void download()}>
+                      <Download aria-hidden="true" />
+                      ダウンロード
+                    </button>
                     {savedPath && (
-                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                        保存しました: {savedPath.split("/").pop()}（ダウンロード内）
-                      </p>
+                      <p className="mt-2 text-xs leading-relaxed text-muted">保存しました: {savedPath.split("/").pop()}（ダウンロード内）</p>
                     )}
                   </>
                 )}

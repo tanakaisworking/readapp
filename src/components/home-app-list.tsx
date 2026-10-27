@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, Plus } from "lucide-react";
+import { BellRing, ChevronRight, FolderOpen, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
+import { AppAvatar } from "@/components/app-avatar";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import { KNOWN_APPS, knownApp, type FullState } from "@/lib/apps";
 
@@ -50,51 +49,86 @@ export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
     const name = state.names[app.id] ?? app.name;
     const voice = voiceNameOf(app.id);
     return (
-      <li key={app.id} className="flex items-center gap-3">
-        <button type="button" onClick={() => onOpenApp(app.id)} aria-label={`${name}の設定を開く`} className="flex min-w-0 flex-1 items-center gap-2.5 rounded-sm py-1.5 text-left outline-none transition-colors hover:bg-surface-muted focus-visible:ring-2 focus-visible:ring-primary/50">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold" style={{ backgroundColor: `${app.color}2e` }} aria-hidden="true">{name.slice(0, 1)}</span>
+      <li key={app.id} className="list-row items-center gap-3 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => onOpenApp(app.id)}
+          aria-label={`${name}の設定を開く`}
+          className="list-col-grow group -my-1 flex min-w-0 items-center gap-3 rounded-field py-1 pe-1 text-left"
+        >
+          <AppAvatar name={name} color={app.color} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{name}</span>
-            {voice && <span className="block truncate text-xs text-muted-foreground">{voice}の声</span>}
+            {voice && <span className="block truncate text-xs text-muted">{voice}の声</span>}
           </span>
+          <ChevronRight className="size-4 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
         </button>
-        {!state.speak_all && <Switch checked={isOn(state, app.id)} onChange={(v) => void api.setEnabled(app.id, v)} label={`${name}の読み上げ`} />}
+        {!state.speak_all && (
+          <input
+            type="checkbox"
+            role="switch"
+            className="toggle toggle-primary toggle-sm"
+            checked={isOn(state, app.id)}
+            onChange={(e) => void api.setEnabled(app.id, e.target.checked)}
+            aria-label={`${name}の読み上げ`}
+          />
+        )}
       </li>
     );
   };
 
   return (
-    <>
-      <div className="rounded-lg bg-card px-3.5 shadow-[0_1px_2px_rgba(41,39,45,0.06)]">
-        <div className="flex items-center justify-between gap-3 py-2">
-          <span className="text-sm font-medium">すべての通知</span>
-          <Switch checked={state.speak_all} onChange={(v) => void api.setSpeakAll(v)} label="すべての通知を読み上げる" />
-        </div>
-        {state.speak_all ? (
-          <p className="pb-2 text-xs leading-relaxed text-muted-foreground">すべてのアプリを読み上げます。オフにすると、アプリごとに選べます。</p>
-        ) : (
-          <ul className="border-t border-border/60 py-1">{primaryIds.map((id) => apps.find((app) => app.id === id)).filter((app) => app !== undefined).map(appRow)}</ul>
-        )}
-        <details className="pb-2">
-          <summary className="disclosure-summary">アプリを管理<span className="ml-auto text-xs font-normal text-muted-foreground">{apps.length}件</span></summary>
-          {state.speak_all && <p className="mt-2 text-xs leading-relaxed text-muted-foreground">アプリごとに声を変えられます。</p>}
-          <ul className="mt-1">{(state.speak_all ? apps : remaining).map(appRow)}</ul>
+    <div className="surface">
+      <ul className="list">
+        <li className="list-row items-center gap-3 px-3 py-2.5">
+          <span className="grid size-8 place-items-center rounded-full bg-primary/12 text-primary" aria-hidden="true">
+            <BellRing className="size-4" />
+          </span>
+          <div className="list-col-grow min-w-0">
+            <p className="text-sm font-medium">すべての通知</p>
+            <p className="truncate text-xs text-muted">{state.speak_all ? "どのアプリの通知も読み上げます" : "選んだアプリだけ読み上げます"}</p>
+          </div>
+          <input
+            type="checkbox"
+            role="switch"
+            className="toggle toggle-primary toggle-sm"
+            checked={state.speak_all}
+            onChange={(e) => void api.setSpeakAll(e.target.checked)}
+            aria-label="すべての通知を読み上げる"
+          />
+        </li>
+        {!state.speak_all && primaryIds.map((id) => apps.find((app) => app.id === id)).filter((app) => app !== undefined).map(appRow)}
+      </ul>
+      <details className="collapse collapse-arrow collapse-compact rounded-none rounded-b-box border-t border-base-200">
+        <summary className="collapse-title">
+          {state.speak_all ? "アプリごとの声" : "ほかのアプリ"}
+          <span className="ml-auto text-xs font-normal text-muted">{state.speak_all ? apps.length : remaining.length}件</span>
+        </summary>
+        <div className="collapse-content">
+          {state.speak_all && <p className="pb-1 text-xs leading-relaxed text-muted">アプリを選ぶと、そのアプリだけ声を変えられます。</p>}
+          <ul className="list -mx-4">{(state.speak_all ? apps : remaining).map(appRow)}</ul>
           {newcomers.length > 0 && (
             <div className="mt-3">
-              <p className="text-xs text-muted-foreground">通知が届いたアプリ</p>
-              <ul className="mt-2 space-y-1.5">
+              <p className="text-xs font-medium text-muted">通知が届いたアプリ</p>
+              <ul className="mt-1.5 space-y-1">
                 {newcomers.map((o) => (
-                  <li key={o.id} className="flex items-center gap-2">
+                  <li key={o.id} className="flex items-center gap-2 rounded-field bg-base-200 py-1.5 ps-3 pe-1.5">
                     <span className="min-w-0 flex-1 truncate text-sm">{o.name}</span>
-                    <Button size="sm" variant="outline" onClick={() => void api.setEnabled(o.id, true, o.name)}><Plus aria-hidden="true" />追加</Button>
+                    <button type="button" className="btn btn-xs btn-primary btn-soft" onClick={() => void api.setEnabled(o.id, true, o.name)}>
+                      <Plus aria-hidden="true" />
+                      追加
+                    </button>
                   </li>
                 ))}
               </ul>
             </div>
           )}
-          <Button className="mt-3 w-full" variant="outline" onClick={() => void pickFromFile()}><FolderOpen aria-hidden="true" />ファイルから選ぶ</Button>
-        </details>
-      </div>
-    </>
+          <button type="button" className="btn btn-sm btn-block mt-3" onClick={() => void pickFromFile()}>
+            <FolderOpen aria-hidden="true" />
+            ファイルから選ぶ
+          </button>
+        </div>
+      </details>
+    </div>
   );
 }

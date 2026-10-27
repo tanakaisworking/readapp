@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { CircleAlert, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button } from "@/components/ui/button";
-import type { SpeechIssue } from "@/hooks/useSettings";
+import { SPEND_CAP_MESSAGE, type SpeechIssue } from "@/hooks/useSettings";
 
 const titles: Record<SpeechIssue["kind"], string> = {
   quota: "使用上限に達しました",
@@ -22,9 +21,17 @@ export function SpeechIssueNotice({ issue, compact = false, onDismiss, onUseSyst
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ownKey = issue.voice_id.startsWith("gemini:");
-  const description = issue.kind === "quota" && ownKey
-    ? "Google側の使用上限に達しています。"
-    : issue.message;
+  const spendCap = ownKey && issue.message === SPEND_CAP_MESSAGE;
+  const description = spendCap
+    ? "Googleのプロジェクトに設定した、月の利用額の上限を超えています。翌月まで待つか、AI Studioで上限を引き上げてください。同じプロジェクトのAPIキーは、新しく作ったものも上限を共有します。"
+    : issue.kind === "quota" && ownKey
+      ? "Google側の使用上限に達しています。"
+      : issue.message;
+  const title = spendCap
+    ? "月の利用額の上限に達しました"
+    : ownKey && issue.kind === "authentication" ? "APIキーを確認してください" : titles[issue.kind];
+  // 利用額の上限は利用額の設定画面、それ以外はレート制限の画面を開く
+  const studioUrl = spendCap ? "https://ai.studio/spend" : "https://aistudio.google.com/rate-limit";
   const useSystem = async () => {
     if (!onUseSystem || busy) return;
     setBusy(true); setActionError(null);
@@ -34,23 +41,46 @@ export function SpeechIssueNotice({ issue, compact = false, onDismiss, onUseSyst
   };
 
   return (
-    <div role={compact ? undefined : "status"} aria-atomic={compact ? undefined : true} className="rounded-md bg-warning-soft p-3">
+    <div
+      role={compact ? undefined : "status"}
+      aria-atomic={compact ? undefined : true}
+      className="alert alert-soft alert-warning flex flex-col items-stretch gap-0 px-3.5 py-3 text-left"
+    >
       <div className="flex items-start gap-2">
-        <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+        <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          {!compact && <p className="mb-1 text-xs text-muted-foreground">{ownKey ? "Gemini · 自分のAPIキー" : "クラウド音声"} · 前回の試行</p>}
-          <h3 className="text-sm font-semibold">{ownKey && issue.kind === "authentication" ? "APIキーを確認してください" : titles[issue.kind]}</h3>
+          {!compact && <p className="text-[11px] text-muted">{ownKey ? "Gemini · 自分のAPIキー" : "クラウド音声"} · 前回の試行</p>}
+          <h3 className="text-sm font-semibold">{title}</h3>
         </div>
-        {onDismiss && <button type="button" onClick={onDismiss} aria-label="状態のお知らせを閉じる" className="rounded-sm p-1 text-muted-foreground outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-primary/50"><X className="h-4 w-4" aria-hidden="true" /></button>}
+        {onDismiss && (
+          <button type="button" onClick={onDismiss} aria-label="状態のお知らせを閉じる" className="btn btn-ghost btn-xs btn-circle -me-1 -mt-0.5 text-base-content">
+            <X aria-hidden="true" />
+          </button>
+        )}
       </div>
-      <p className="mt-2 text-xs leading-relaxed">{description}{description.endsWith("。") ? "" : "。"}</p>
-      {issue.kind === "quota" && ownKey && <p className="text-xs leading-relaxed">時間をおいて試してください。</p>}
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">通知はシステム音声で読み上げます。</p>
-      <div className="mt-2 flex flex-wrap gap-1">
-        {onUseSystem && <Button size="sm" variant="outline" disabled={busy} onClick={() => void useSystem()}>{busy ? "変更中…" : "システム音声を使う"}</Button>}
-        {ownKey && <Button size="sm" variant="ghost" onClick={() => { setActionError(null); void openUrl("https://aistudio.google.com/rate-limit").catch(() => setActionError("Google AI Studioを開けませんでした。ブラウザからご確認ください。")); }}>利用状況を確認</Button>}
+      <div className="mt-1.5 ps-6 text-xs leading-relaxed text-base-content">
+        <p>{description}{description.endsWith("。") ? "" : "。"}{issue.kind === "quota" && ownKey && "時間をおいて試してください。"}</p>
+        <p className="mt-0.5 text-muted">通知はシステム音声で読み上げます。</p>
+        {(onUseSystem || ownKey) && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {onUseSystem && (
+              <button type="button" className="btn btn-xs" disabled={busy} onClick={() => void useSystem()}>
+                {busy ? "変更中…" : "システム音声を使う"}
+              </button>
+            )}
+            {ownKey && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => { setActionError(null); void openUrl(studioUrl).catch(() => setActionError("Google AI Studioを開けませんでした。ブラウザからご確認ください。")); }}
+              >
+                {spendCap ? "上限を確認" : "利用状況を確認"}
+              </button>
+            )}
+          </div>
+        )}
+        {actionError && <p className="mt-2" role="status">{actionError}</p>}
       </div>
-      {actionError && <p className="mt-2 text-xs leading-relaxed" role="status">{actionError}</p>}
     </div>
   );
 }

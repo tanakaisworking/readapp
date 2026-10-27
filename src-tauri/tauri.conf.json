@@ -12,12 +12,23 @@
   "app": {
     "windows": [
       {
-        "title": "readapp",
+        "title": "readappの設定",
         "visible": false,
         "width": 400,
         "height": 680,
         "minWidth": 360,
         "minHeight": 560
+      },
+      {
+        "label": "companion",
+        "title": "readapp",
+        "visible": false,
+        "width": 340,
+        "height": 500,
+        "minWidth": 260,
+        "minHeight": 340,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

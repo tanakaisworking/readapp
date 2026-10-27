@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button } from "@/components/ui/button";
 
 // 「試しに喋る」: 入力した文で readapp 自身が通知を出し、それを受け取って読み上げる。
 // 通知 → (MAS: ショートカットの「readapp通知」/ dmg: 直接監視) → 変換 → 読み上げ の実経路をまるごと試す。
@@ -117,38 +116,37 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
   return (
     <div className="mt-3">
       <label className="block">
-        <span className="text-xs text-muted-foreground">通知の文</span>
+        <span className="text-xs font-medium text-muted">通知の文</span>
         <input
           value={text}
           onChange={(e) => change(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && void send()}
           maxLength={200}
-          className="mt-1 h-9 w-full rounded-md bg-surface-muted px-3 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/50"
+          className="input input-sm mt-1 w-full text-[13px]"
         />
       </label>
-      <div className="mt-2 flex items-center gap-2">
-        <Button size="sm" onClick={() => void send()} disabled={!text.trim() || locked}>
-          <Play className="h-3.5 w-3.5" />
+      <div className="mt-2.5 flex items-center gap-2.5">
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => void send()} disabled={!text.trim() || locked}>
+          {status === "sending" || status === "waiting" ? <span className="loading loading-dots loading-xs" aria-hidden="true" /> : <Play aria-hidden="true" />}
           試しに喋る
-        </Button>
-        <span className="text-xs text-muted-foreground" role="status">
+        </button>
+        <span className="text-xs text-muted" role="status">
           {status === "sending" && "通知を出しています…"}
-          {status === "waiting" && "通知を出しました。届くのを待っています…"}
+          {status === "waiting" && "届くのを待っています…"}
           {status === "received" && "通知が届きました。"}
         </span>
       </div>
       {(status === "missed" || error) && (
-        <div className="mt-2 rounded-lg bg-surface-muted px-3 py-2.5 text-xs leading-relaxed text-muted-foreground" role="alert">
+        <div className="mt-2.5 rounded-field bg-base-200 px-3 py-2.5 text-xs leading-relaxed" role="alert">
           <p>
             {error ??
               (edition === "mas"
                 ? "通知が readapp に届きませんでした。ショートカット「readapp通知」がオンか確かめてください。まだなら「読み上げるアプリ」の「ほかのアプリを読み上げる」から追加できます。"
                 : "通知が readapp に届きませんでした。「直接監視」を許可しているか確かめてください。")}
           </p>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="mt-1 -ml-2"
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs mt-1.5 -ms-2"
             disabled={cooling}
             onClick={() => {
               onDirect(text.trim());
@@ -156,7 +154,7 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
             }}
           >
             通知なしで喋らせる
-          </Button>
+          </button>
         </div>
       )}
     </div>
