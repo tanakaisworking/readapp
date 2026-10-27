@@ -12,8 +12,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 小窓のウィンドウ名 (tauri.conf.json と同じ)
 pub(crate) const WINDOW: &str = "companion";
-/// 小窓に残す件数
-const FEED_LIMIT: usize = 30;
+/// 小窓でさかのぼれる件数 (メモリだけに持つ)
+const FEED_LIMIT: usize = 100;
 /// 背景にできる画像 (WebView がどのOSでも表示できる形式)
 const IMAGE_TYPES: [(&str, &str); 5] = [
     ("png", "image/png"),
@@ -34,6 +34,8 @@ pub(crate) enum LineState {
     Queued,
     Speaking,
     Done,
+    /// 読み上げ停止・消音中に届いた (声は出さず、吹き出しだけ出す)
+    Silent,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -45,6 +47,20 @@ pub(crate) struct Line {
     /// 受け付けた時刻 (UNIXミリ秒)
     at: u64,
     state: LineState,
+    /// 吹き出しを押すと、通知か送ってきたアプリを開ける
+    openable: bool,
+    /// 直接監視で拾った通知バナーのID。画面へは送らない
+    #[serde(skip)]
+    #[cfg_attr(not(direct_capture), allow(dead_code))]
+    banner: Option<String>,
+}
+
+/// 吹き出しの送り元
+pub(crate) struct Source<'a> {
+    pub app_id: &'a str,
+    pub app_name: Option<&'a str>,
+    pub banner: Option<&'a str>,
+    pub openable: bool,
 }
 
 static HANDLE: OnceLock<AppHandle> = OnceLock::new();
@@ -69,15 +85,18 @@ fn now_ms() -> u64 {
 }
 
 /// 読み上げを順番待ちへ入れる前に記録する (再生側の「話し始めた」より必ず先に行がある)。
-pub(crate) fn record(app_id: &str, app_name: Option<&str>, text: &str) -> u64 {
+/// speaking=false は読み上げ停止・消音中で、声を出さない吹き出しにする。
+pub(crate) fn record(source: &Source, text: &str, speaking: bool) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let line = Line {
         id,
-        app_id: app_id.to_string(),
-        app_name: app_name.map(str::to_string),
+        app_id: source.app_id.to_string(),
+        app_name: source.app_name.map(str::to_string),
         text: text.to_string(),
         at: now_ms(),
-        state: LineState::Queued,
+        state: if speaking { LineState::Queued } else { LineState::Silent },
+        openable: source.openable,
+        banner: source.banner.map(str::to_string),
     };
     if let Ok(mut feed) = FEED.lock() {
         feed.push_back(line.clone());
@@ -89,10 +108,13 @@ pub(crate) fn record(app_id: &str, app_name: Option<&str>, text: &str) -> u64 {
     id
 }
 
-/// 話し始め・話し終わりを小窓へ伝える。
+/// 話し始め・話し終わりを小窓へ伝える。読み上げなしの吹き出しはそのまま。
 pub(crate) fn mark(id: u64, state: LineState) {
     let updated = FEED.lock().ok().and_then(|mut feed| {
         let line = feed.iter_mut().find(|l| l.id == id)?;
+        if line.state == LineState::Silent {
+            return None;
+        }
         line.state = state;
         Some(line.clone())
     });
@@ -101,20 +123,32 @@ pub(crate) fn mark(id: u64, state: LineState) {
     }
 }
 
-/// 順番待ちに入れられなかった行を消す (読んでいない文を残さない)。
-pub(crate) fn discard(id: u64) {
-    let feed = FEED.lock().ok().map(|mut feed| {
-        feed.retain(|l| l.id != id);
-        feed.iter().cloned().collect::<Vec<_>>()
-    });
-    if let Some(feed) = feed {
-        emit("companion-feed", feed);
-    }
-}
-
 #[tauri::command]
 pub(crate) fn companion_feed() -> Vec<Line> {
     FEED.lock().map(|f| f.iter().cloned().collect()).unwrap_or_default()
+}
+
+/// 吹き出しを押した時: まだ画面に出ている通知ならそれを押し (通常版のみ)、
+/// 消えていれば送ってきたアプリを開く。開いたものを "notification" / "app" で返す。
+#[tauri::command(async)]
+pub(crate) fn companion_open(id: u64) -> Result<&'static str, String> {
+    let line = FEED
+        .lock()
+        .ok()
+        .and_then(|feed| feed.iter().find(|l| l.id == id).cloned())
+        .ok_or("not_found")?;
+    if !line.openable {
+        return Err("not_openable".to_string());
+    }
+    #[cfg(direct_capture)]
+    if line.banner.as_deref().is_some_and(crate::notifications::ax::press_banner) {
+        return Ok("notification");
+    }
+    if crate::open_source_app(&line.app_id, line.app_name.as_deref()) {
+        Ok("app")
+    } else {
+        Err("cannot_open".to_string())
+    }
 }
 
 fn image_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -253,9 +287,10 @@ mod tests {
 
     #[test]
     fn feed_keeps_latest_lines_and_tracks_state() {
-        let first = record("slack", Some("Slack"), "鈴木さんから。");
+        let source = |app_id: &'static str| Source { app_id, app_name: None, banner: None, openable: false };
+        let first = record(&source("slack"), "鈴木さんから。", true);
         for i in 0..FEED_LIMIT {
-            record("claude", Some("Claude"), &format!("{i}"));
+            record(&source("claude"), &format!("{i}"), true);
         }
         let feed = companion_feed();
         assert!(feed.len() <= FEED_LIMIT);
@@ -263,7 +298,11 @@ mod tests {
         let last = feed.last().unwrap().id;
         mark(last, LineState::Speaking);
         assert_eq!(companion_feed().last().unwrap().state, LineState::Speaking);
-        discard(last);
-        assert!(companion_feed().iter().all(|l| l.id != last));
+        // 読み上げ停止中の吹き出しは、再生側の知らせで状態が変わらない
+        let silent = record(&source("slack"), "止めている間の通知", false);
+        mark(silent, LineState::Done);
+        let line = companion_feed().into_iter().find(|l| l.id == silent).unwrap();
+        assert_eq!(line.state, LineState::Silent);
+        assert_eq!(companion_open(silent), Err("not_openable".to_string()));
     }
 }

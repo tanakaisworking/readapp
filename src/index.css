@@ -155,3 +155,72 @@
 .toggle-primary:checked::before {
   background-color: var(--color-primary-content);
 }
+
+/* テーマカラー (設定の「見た目」)。ラベンダーはテーマの既定色なので指定しない。
+   daisyUIのテーマ変数より確実に優先されるよう、レイヤー外に置く。 */
+:root[data-accent="sakura"] {
+  --color-primary: #c24a72;
+  --color-primary-content: #fff8fa;
+}
+:root[data-accent="sora"] {
+  --color-primary: #2f72c9;
+  --color-primary-content: #f7faff;
+}
+:root[data-accent="mint"] {
+  --color-primary: #23825f;
+  --color-primary-content: #f5fcf9;
+}
+:root[data-accent="mikan"] {
+  --color-primary: #b9581a;
+  --color-primary-content: #fffaf6;
+}
+:root[data-accent="sumi"] {
+  --color-primary: #4a4651;
+  --color-primary-content: #fbfaf9;
+}
+
+/* ダークの時 (ダークを選んだ時) */
+:root[data-theme="readapp-dark"][data-accent="sakura"] {
+  --color-primary: #f0a3bd;
+  --color-primary-content: #2e1520;
+}
+:root[data-theme="readapp-dark"][data-accent="sora"] {
+  --color-primary: #8fbcf2;
+  --color-primary-content: #0f2340;
+}
+:root[data-theme="readapp-dark"][data-accent="mint"] {
+  --color-primary: #7fd3b0;
+  --color-primary-content: #0e2a1f;
+}
+:root[data-theme="readapp-dark"][data-accent="mikan"] {
+  --color-primary: #f3b07c;
+  --color-primary-content: #3a1d08;
+}
+:root[data-theme="readapp-dark"][data-accent="sumi"] {
+  --color-primary: #d8d4dd;
+  --color-primary-content: #222027;
+}
+
+/* システムに合わせていて、OSがダークの時 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme])[data-accent="sakura"] {
+    --color-primary: #f0a3bd;
+    --color-primary-content: #2e1520;
+  }
+  :root:not([data-theme])[data-accent="sora"] {
+    --color-primary: #8fbcf2;
+    --color-primary-content: #0f2340;
+  }
+  :root:not([data-theme])[data-accent="mint"] {
+    --color-primary: #7fd3b0;
+    --color-primary-content: #0e2a1f;
+  }
+  :root:not([data-theme])[data-accent="mikan"] {
+    --color-primary: #f3b07c;
+    --color-primary-content: #3a1d08;
+  }
+  :root:not([data-theme])[data-accent="sumi"] {
+    --color-primary: #d8d4dd;
+    --color-primary-content: #222027;
+  }
+}

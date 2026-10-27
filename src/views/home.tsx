@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Play, ShieldCheck, Volume2 } from "lucide-react";
 import { HomeAppList } from "@/components/home-app-list";
 import { HomeSpeech } from "@/components/home-speech";
+import { AppearanceSettings } from "@/components/appearance-settings";
 import { MasAppList } from "@/components/mas-app-list";
 import { PersonaAvatar } from "@/components/persona-avatar";
 import {
@@ -203,6 +204,8 @@ export function Home({ api, state, personas, platform, edition, speaking, onPrev
       </section>
 
       <HomeSpeech api={api} state={state} personas={personas} voices={voices} voiceName={voiceName} platform={platform} edition={edition} speaking={speaking} onPreview={onPreview} onPickPersona={onPickPersona} />
+
+      <AppearanceSettings />
     </div>
   );
 }

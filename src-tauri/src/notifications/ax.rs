@@ -48,6 +48,8 @@ extern "C" {
         attribute: CFStringRef,
         value: *mut *const c_void,
     ) -> AXError;
+    fn AXUIElementCopyActionNames(element: AXUIElementRef, names: *mut *const c_void) -> AXError;
+    fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
 }
 
 /// 許可済みか (ダイアログは出さない)。
@@ -118,6 +120,34 @@ impl El {
             // SAFETY: 配列内の要素は借用なので、保持する分だけretainする。
             .map(|p| El(unsafe { CFType::wrap_under_get_rule(p) }))
             .collect()
+    }
+
+    /// 要素が受け付ける操作の名前
+    fn actions(&self) -> Vec<String> {
+        let mut names: *const c_void = std::ptr::null();
+        let rc = unsafe { AXUIElementCopyActionNames(self.0.as_CFTypeRef(), &mut names) };
+        if rc != KAX_ERROR_SUCCESS || names.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: Copy系の戻り値で、所有権を受け取る。
+        let names = unsafe { CFType::wrap_under_create_rule(names) };
+        names
+            .downcast::<CFArray<*const c_void>>()
+            .map(|arr| {
+                arr.get_all_values()
+                    .into_iter()
+                    .filter(|p| !p.is_null())
+                    // SAFETY: 配列内の要素は借用。文字列としてだけ読む。
+                    .filter_map(|p| unsafe { CFType::wrap_under_get_rule(p) }.downcast::<CFString>())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn perform(&self, action: &str) -> bool {
+        let name = CFString::new(action);
+        unsafe { AXUIElementPerformAction(self.0.as_CFTypeRef(), name.as_concrete_TypeRef()) == KAX_ERROR_SUCCESS }
     }
 }
 
@@ -298,6 +328,34 @@ fn collect_texts(el: &El, depth: u8, out: &mut Vec<(String, String)>) {
     }
 }
 
+fn find_banner(el: &El, uid: &str, depth: u8) -> Option<El> {
+    if depth > 10 {
+        return None;
+    }
+    if is_notification_subrole(&el.string("AXSubrole").unwrap_or_default())
+        && el.string("AXIdentifier").as_deref() == Some(uid)
+    {
+        return Some(El(el.0.clone()));
+    }
+    el.elements("AXChildren").iter().find_map(|child| find_banner(child, uid, depth + 1))
+}
+
+/// まだ画面に出ている通知を押す (通知をクリックした時と同じ動作)。
+/// macOS 27 のバナーは AXPress を受け付ける (2026-10-27 実機で確認)。消えていれば false。
+pub fn press_banner(uid: &str) -> bool {
+    if uid.is_empty() || !trusted() {
+        return false;
+    }
+    let Some(app) = notification_center_pid().and_then(El::app) else {
+        return false;
+    };
+    app.elements("AXWindows")
+        .iter()
+        .filter(|win| win.string("AXSubrole").as_deref() == Some("AXSystemDialog"))
+        .find_map(|win| find_banner(win, uid, 0))
+        .is_some_and(|banner| banner.actions().iter().any(|a| a == "AXPress") && banner.perform("AXPress"))
+}
+
 /// 監視が開始済みか (許可後に自動開始される)。
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -328,7 +386,9 @@ fn pipeline_worker(handle: AppHandle) -> mpsc::Sender<Banner> {
             let app_id = app_id_for(&b.app_name);
             // 待機中にアプリをOFFにされた場合も読まない。重複判定は走査時に済んでいる。
             if should_speak(&settings, &app_id, crate::Route::Direct) {
-                speak_now(&settings, &app_id, &b.speech_title(), &b.body, crate::telemetry::Trigger::Direct);
+                // スタックは同じIDのまま中身が入れ替わるので、吹き出しから押す対象にしない
+                let banner = (!b.is_stack && !b.uid.is_empty()).then_some(b.uid.as_str());
+                speak_now(&settings, &app_id, &b.speech_title(), &b.body, crate::telemetry::Trigger::Direct, banner);
             }
         }
     });

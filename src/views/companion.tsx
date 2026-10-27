@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Check, ImagePlus, Pin, Settings2, X } from "lucide-react";
+import { ArrowDown, Check, ImagePlus, Pin, Settings2, VolumeX, X } from "lucide-react";
 import { knownApp } from "@/lib/apps";
 import { cn } from "@/lib/utils";
 
@@ -18,10 +18,14 @@ interface Line {
   app_name: string | null;
   text: string;
   at: number;
-  state: "queued" | "speaking" | "done";
+  state: "queued" | "speaking" | "done" | "silent";
+  /** 押すと通知か送ってきたアプリを開ける */
+  openable?: boolean;
 }
 
 const PIN_KEY = "readapp.companion.pinned";
+/** 小窓でさかのぼれる件数 (Rust側 companion::FEED_LIMIT と同じ) */
+const FEED_LIMIT = 100;
 /** 背景の選択。"preset:<id>" か、取り込んだ画像の "custom" */
 const BACKGROUND_KEY = "readapp.companion.background";
 
@@ -55,7 +59,10 @@ function lineColor(line: Line): string {
 }
 
 function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString("ja-JP", { hour: "numeric", minute: "2-digit" });
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString("ja-JP", { hour: "numeric", minute: "2-digit" });
+  // 今日より前の通知は日付も出す (さかのぼった時に分かるように)
+  return date.toDateString() === new Date().toDateString() ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`;
 }
 
 function Bars() {
@@ -97,26 +104,20 @@ function useTyped(text: string, speaking: boolean): string {
   return text.slice(0, shown);
 }
 
-function Bubble({ line }: { line: Line }) {
+function Bubble({ line, onOpen }: { line: Line; onOpen?: (line: Line) => void }) {
   const speaking = line.state === "speaking";
   const typed = useTyped(line.text, speaking);
-  return (
-    <motion.li
-      layout
-      initial={{ opacity: 0, y: 18, scale: 0.94 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ type: "spring", stiffness: 420, damping: 30 }}
-      style={{ transformOrigin: "left bottom" }}
-      className="w-fit min-w-[11rem] max-w-[88%] rounded-[18px] rounded-bl-[6px] bg-base-100/95 px-3.5 pb-2.5 pt-2 shadow-[0_6px_20px_rgb(41_39_45/0.16)] backdrop-blur-sm"
-    >
-      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+  const card = "block w-full rounded-[18px] rounded-bl-[6px] bg-base-100/95 px-3.5 pb-2.5 pt-2 text-left shadow-[0_6px_20px_rgb(41_39_45/0.16)] backdrop-blur-sm";
+  const content = (
+    <>
+      <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
         <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: lineColor(line) }} aria-hidden="true" />
         <span className="truncate">{lineLabel(line)}</span>
         {speaking && <Bars />}
+        {line.state === "silent" && <VolumeX className="size-3 shrink-0" aria-label="読み上げなし" />}
         <span className="ms-auto shrink-0 ps-3 font-medium tabular-nums">{clock(line.at)}</span>
-      </div>
-      <p className="relative mt-0.5 whitespace-pre-line text-[15px] font-bold leading-snug">
+      </span>
+      <span className="relative mt-0.5 block whitespace-pre-line text-[15px] font-bold leading-snug">
         {line.state === "queued" ? (
           <span className="loading loading-dots loading-sm text-muted" aria-label="準備中" />
         ) : (
@@ -125,8 +126,173 @@ function Bubble({ line }: { line: Line }) {
             <span className="absolute inset-0">{typed}</span>
           </>
         )}
-      </p>
+      </span>
+    </>
+  );
+  return (
+    <motion.li
+      layout
+      initial={{ opacity: 0, y: 18, scale: 0.94 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ type: "spring", stiffness: 420, damping: 30 }}
+      style={{ transformOrigin: "left bottom" }}
+      className="w-fit min-w-[11rem] max-w-[88%]"
+    >
+      {line.openable && onOpen ? (
+        <button
+          type="button"
+          onClick={() => onOpen(line)}
+          title={`${lineLabel(line)}を開く`}
+          className={cn(card, "cursor-pointer transition-[transform,box-shadow] duration-150 hover:-translate-y-0.5 hover:shadow-[0_10px_26px_rgb(41_39_45/0.2)] active:translate-y-0")}
+        >
+          {content}
+        </button>
+      ) : (
+        <div className={card}>{content}</div>
+      )}
     </motion.li>
+  );
+}
+
+/** 読み上げたことの一覧。上へスクロールすると過去の通知をさかのぼれる */
+/** フォーカスしていない時に吹き出しを収める範囲 (ウィンドウの下から何%)。プリセットは主役を上半分に置いている */
+const BUBBLE_AREA_KEY = "readapp.companion.bubbleArea";
+const BUBBLE_AREA = { min: 25, max: 75, step: 5, initial: 45 };
+
+function loadBubbleArea(): number {
+  try {
+    const v = Number(localStorage.getItem(BUBBLE_AREA_KEY));
+    return v >= BUBBLE_AREA.min && v <= BUBBLE_AREA.max ? v : BUBBLE_AREA.initial;
+  } catch {
+    return BUBBLE_AREA.initial;
+  }
+}
+
+function Feed({ lines, onOpen, expanded, area }: { lines: Line[]; onOpen: (line: Line) => void; expanded: boolean; area: number }) {
+  const reduce = useReducedMotion();
+  const scroller = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLOListElement>(null);
+  // いちばん下を見ている間だけ、新しい通知に合わせて下へついていく
+  const atBottom = useRef(true);
+  const [unread, setUnread] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const lastId = lines[lines.length - 1]?.id;
+
+  // 最後にユーザーが自分でスクロールした時刻。吹き出しの出入りのアニメーションで起きたスクロールと区別する
+  const userScrolledAt = useRef(0);
+  const markUserScroll = () => {
+    userScrolledAt.current = performance.now();
+  };
+
+  // いちばん下を見ている間は、吹き出しの出入りのアニメーションが落ち着くまで最下部に合わせ続ける
+  const stickToBottom = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const until = performance.now() + 600;
+    const tick = () => {
+      if (!atBottom.current) return;
+      el.scrollTop = el.scrollHeight;
+      if (performance.now() < until) requestAnimationFrame(tick);
+    };
+    tick();
+  }, []);
+
+  useEffect(() => {
+    const el = scroller.current;
+    const ol = list.current;
+    if (!el || !ol) return;
+    const observer = new ResizeObserver(() => {
+      stickToBottom();
+      setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    });
+    observer.observe(ol);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [stickToBottom]);
+
+  // さかのぼって読んでいる途中に届いたら、下へ戻さずに知らせるだけにする
+  useEffect(() => {
+    if (lastId !== undefined && !atBottom.current) setUnread(true);
+  }, [lastId]);
+
+  // 他のアプリを使っている間はキャラの顔を隠さないよう、最新の数件だけを下に出す
+  useEffect(() => {
+    if (expanded) return;
+    atBottom.current = true;
+    setUnread(false);
+    stickToBottom();
+  }, [expanded, area, stickToBottom]);
+
+  const onScroll = () => {
+    const el = scroller.current;
+    // 自分でスクロールした時だけ「さかのぼっているか」を判定し直す
+    if (!el || performance.now() - userScrolledAt.current > 400) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (atBottom.current) setUnread(false);
+  };
+
+  const jumpToLatest = () => {
+    const el = scroller.current;
+    if (!el) return;
+    atBottom.current = true;
+    setUnread(false);
+    if (reduce) stickToBottom();
+    else el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
+  return (
+    <>
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        onWheel={markUserScroll}
+        onTouchMove={markUserScroll}
+        onKeyDown={markUserScroll}
+        onPointerDown={markUserScroll}
+        tabIndex={0}
+        aria-label="読み上げたこと。上へスクロールすると過去の通知を見られます"
+        style={{ top: expanded ? "2.5rem" : `${100 - area}%` }}
+        className={cn(
+          // 最下部に合わせるのはこちらで行うので、ブラウザの自動調整 (スクロールアンカー) は切る
+          "absolute inset-x-0 bottom-0 overscroll-contain px-3 pb-3 outline-none transition-[top] duration-300 ease-out [overflow-anchor:none] motion-reduce:transition-none [mask-image:linear-gradient(transparent,#000_36px)] [scrollbar-width:thin]",
+          expanded ? "overflow-y-auto" : "overflow-hidden",
+        )}
+      >
+        <ol ref={list} aria-live="polite" className="flex min-h-full flex-col justify-end gap-2 pt-9">
+          {overflowing && expanded && (
+            <li className="self-center rounded-full bg-base-100/80 px-3 py-1 text-[10px] font-medium text-muted backdrop-blur-sm">
+              ここより前の通知はありません・アプリを終了すると消えます
+            </li>
+          )}
+          <AnimatePresence initial={false}>
+            {lines.length
+              ? lines.map((line) => <Bubble key={line.id} line={line} onOpen={onOpen} />)
+              : (
+                  <Bubble
+                    key="welcome"
+                    line={{ id: 0, app_id: "preview", app_name: null, text: "通知が来たら、\nここで教えるね。", at: Date.now(), state: "done" }}
+                  />
+                )}
+          </AnimatePresence>
+        </ol>
+      </div>
+      <AnimatePresence>
+        {unread && expanded && (
+          <motion.button
+            type="button"
+            onClick={jumpToLatest}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            className="btn btn-primary btn-xs absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full shadow-md"
+          >
+            <ArrowDown aria-hidden="true" />
+            新しい通知
+          </motion.button>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -137,6 +303,27 @@ export function Companion() {
   const [choice, setChoiceState] = useState<string | null>(loadChoice);
   const [picking, setPicking] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // 小窓を使っている間だけ吹き出しを上まで広げ、過去の通知をさかのぼれるようにする
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  const [area, setAreaState] = useState(loadBubbleArea);
+  // 範囲を調整している間は、シートを縮めて範囲を暗く見せる
+  const [adjusting, setAdjusting] = useState(false);
+  const adjustTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const beginAdjust = () => {
+    if (adjustTimer.current) clearTimeout(adjustTimer.current);
+    setAdjusting(true);
+  };
+  const endAdjust = () => {
+    if (adjustTimer.current) clearTimeout(adjustTimer.current);
+    // 離した直後の結果も少し見せてから、シートを戻す
+    adjustTimer.current = setTimeout(() => setAdjusting(false), 1000);
+  };
+  const setArea = (value: number) => {
+    setAreaState(value);
+    try { localStorage.setItem(BUBBLE_AREA_KEY, String(value)); } catch { /* 保存できなくても今は変わる */ }
+  };
+  useEffect(() => () => { if (adjustTimer.current) clearTimeout(adjustTimer.current); }, []);
   const [notice, setNotice] = useState<string | null>(null);
   const [pinned, setPinned] = useState(() => {
     try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
@@ -154,7 +341,7 @@ export function Companion() {
     listen<Line>("companion-line", ({ payload }) => {
       setLines((cur) => {
         const i = cur.findIndex((l) => l.id === payload.id);
-        if (i < 0) return [...cur, payload].slice(-30);
+        if (i < 0) return [...cur, payload].slice(-FEED_LIMIT);
         const next = [...cur];
         next[i] = payload;
         return next;
@@ -164,6 +351,25 @@ export function Companion() {
     invoke<Line[]>("companion_feed").then((feed) => !disposed && setLines((cur) => (cur.length ? cur : feed))).catch(() => {});
     invoke<string | null>("companion_image").then((url) => !disposed && setCustom(url)).catch(() => setCustom(null));
     return () => { disposed = true; offs.forEach((off) => off()); };
+  }, []);
+
+  useEffect(() => {
+    const onFocus = () => setFocused(true);
+    const onBlur = () => setFocused(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    let off: (() => void) | undefined;
+    let disposed = false;
+    getCurrentWindow()
+      .onFocusChanged(({ payload }) => setFocused(payload))
+      .then((f) => (disposed ? f() : (off = f)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      off?.();
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   useEffect(() => {
@@ -217,6 +423,38 @@ export function Companion() {
     return () => { disposed = true; off?.(); };
   }, [applyImage]);
 
+  // 吹き出しを押した時: 画面に残っている通知ならそれを、消えていれば送ってきたアプリを開く
+  const openLine = useCallback((line: Line) => {
+    invoke<string>("companion_open", { id: line.id }).catch(() => setNotice(`${lineLabel(line)}を開けませんでした`));
+  }, []);
+
+  // どこをつかんでも小窓を動かせる。吹き出しやボタンは、少し動かした時だけ動かす (そのまま離せば押せる)
+  const dragFrom = useRef<{ x: number; y: number } | null>(null);
+  const onPointerDown = (e: React.PointerEvent) => {
+    dragFrom.current = null;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    // シートの中 (スライダー・画像) と、スクロールバーの上は動かさない
+    if (target.closest('input, textarea, select, [role="dialog"]')) return;
+    if (target.clientWidth > 0 && e.nativeEvent.offsetX > target.clientWidth) return;
+    if (target.closest("button")) {
+      dragFrom.current = { x: e.clientX, y: e.clientY };
+      return;
+    }
+    void getCurrentWindow().startDragging().catch(() => {});
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const from = dragFrom.current;
+    if (!from) return;
+    if (!(e.buttons & 1)) {
+      dragFrom.current = null;
+      return;
+    }
+    if (Math.hypot(e.clientX - from.x, e.clientY - from.y) < 4) return;
+    dragFrom.current = null;
+    void getCurrentWindow().startDragging().catch(() => {});
+  };
+
   const pickFile = async () => {
     const picked = await open({ multiple: false, directory: false, filters: [{ name: "画像", extensions: IMAGE_EXTENSIONS }] }).catch(() => null);
     if (typeof picked === "string") await applyImage(picked);
@@ -233,7 +471,13 @@ export function Companion() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <main className="group relative h-screen w-screen select-none overflow-hidden bg-base-300">
+      <main
+        className="group relative h-screen w-screen select-none overflow-hidden bg-base-300"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={() => (dragFrom.current = null)}
+        onPointerCancel={() => (dragFrom.current = null)}
+      >
         <AnimatePresence initial={false}>
           {background && (
             <motion.img
@@ -252,9 +496,6 @@ export function Companion() {
 
         {/* 文字を読みやすくする下側の陰り */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-3/5 bg-gradient-to-t from-[rgb(41_39_45/0.28)] to-transparent" />
-
-        {/* 上の帯: ウィンドウをつかんで動かす (左上は閉じるボタン類) */}
-        <div data-tauri-drag-region className="absolute inset-x-0 top-0 z-10 h-11" />
 
         <div className="absolute right-2.5 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
           {[
@@ -298,28 +539,32 @@ export function Companion() {
           )}
         </AnimatePresence>
 
-        <ol
-          aria-label="読み上げたこと"
-          aria-live="polite"
-          className="absolute inset-x-3 bottom-3 top-12 flex flex-col justify-end gap-2 overflow-hidden [mask-image:linear-gradient(transparent,#000_18%)]"
-        >
-          <AnimatePresence initial={false}>
-            {lines.length
-              ? lines.map((line) => <Bubble key={line.id} line={line} />)
-              : (
-                  <Bubble
-                    key="welcome"
-                    line={{ id: 0, app_id: "preview", app_name: null, text: "通知が来たら、\nここで教えるね。", at: Date.now(), state: "done" }}
-                  />
-                )}
-          </AnimatePresence>
-        </ol>
+        {/* 範囲の調整中: 吹き出しを出す範囲を暗くして、境目を示す */}
+        <AnimatePresence>
+          {adjusting && (
+            <motion.div
+              aria-hidden="true"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1, height: `${area}%` }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              style={{ height: `${area}%` }}
+              className="pointer-events-none absolute inset-x-0 bottom-0 border-t-2 border-dashed border-white/85 bg-[rgb(20_18_24/0.45)]"
+            >
+              <span className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-full bg-base-100/95 px-3 py-1 text-[11px] font-semibold text-base-content shadow-md">
+                吹き出しはここまで
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <Feed lines={lines} onOpen={openLine} expanded={(focused || picking) && !adjusting} area={area} />
 
         {/* 背景を選ぶシート */}
         <AnimatePresence>
           {picking && (
             <>
-              <motion.button
+              {!adjusting && <motion.button
                 type="button"
                 aria-label="背景の選択を閉じる"
                 tabIndex={-1}
@@ -328,25 +573,48 @@ export function Companion() {
                 exit={{ opacity: 0 }}
                 onClick={() => setPicking(false)}
                 className="absolute inset-0 z-30 cursor-default bg-[rgb(41_39_45/0.18)]"
-              />
+              />}
               <motion.section
                 role="dialog"
                 aria-label="背景を選ぶ"
                 tabIndex={-1}
                 autoFocus
+                layout
                 initial={{ y: "100%" }}
                 animate={{ y: 0 }}
                 exit={{ y: "100%" }}
                 transition={{ type: "spring", stiffness: 420, damping: 38 }}
                 className="absolute inset-x-0 bottom-0 z-30 rounded-t-[22px] bg-base-100 px-4 pb-4 pt-3 shadow-[0_-8px_30px_rgb(41_39_45/0.18)] outline-none"
               >
-                <div className="flex items-center">
-                  <h2 className="text-[13px] font-semibold">背景を選ぶ</h2>
-                  <button type="button" aria-label="閉じる" onClick={() => setPicking(false)} className="btn btn-ghost btn-circle btn-xs ms-auto">
-                    <X aria-hidden="true" />
-                  </button>
+                {!adjusting && (
+                  <div className="flex items-center">
+                    <h2 className="text-[13px] font-semibold">背景を選ぶ</h2>
+                    <button type="button" aria-label="閉じる" onClick={() => setPicking(false)} className="btn btn-ghost btn-circle btn-xs ms-auto">
+                      <X aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
+                <div className={cn("flex items-center gap-3", !adjusting && "mt-2.5")}>
+                  <label htmlFor="readapp-bubble-area" className="shrink-0 text-xs font-medium">吹き出しの範囲</label>
+                  <input
+                    id="readapp-bubble-area"
+                    type="range"
+                    min={BUBBLE_AREA.min}
+                    max={BUBBLE_AREA.max}
+                    step={BUBBLE_AREA.step}
+                    value={area}
+                    aria-valuetext={`下から${area}パーセント`}
+                    onPointerDown={beginAdjust}
+                    onPointerUp={endAdjust}
+                    onPointerCancel={endAdjust}
+                    onKeyDown={() => { beginAdjust(); endAdjust(); }}
+                    onChange={(e) => setArea(Number(e.target.value))}
+                    className="range range-primary range-xs min-w-0 flex-1"
+                  />
+                  <span className="w-8 shrink-0 text-right text-xs tabular-nums text-muted">{area}%</span>
                 </div>
-                <ul className="mt-2.5 grid grid-cols-4 gap-2">
+                {!adjusting && (<>
+                <ul className="mt-3 grid grid-cols-4 gap-2">
                   {PRESETS.map((p) => (
                     <BackgroundTile key={p.id} name={p.name} src={p.src} selected={selected === p.id} onSelect={() => setChoice(`preset:${p.id}`)} />
                   ))}
@@ -365,6 +633,7 @@ export function Companion() {
                   </li>
                 </ul>
                 <p className="mt-2.5 text-[11px] text-muted">好きな画像を、この窓にドロップしても変えられます。</p>
+                </>)}
               </motion.section>
             </>
           )}

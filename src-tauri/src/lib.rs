@@ -386,14 +386,13 @@ fn catalog() -> &'static [CatalogApp] {
 }
 
 /// notification → shouldSpeak() → transform() → speak() の shouldSpeak 部分。
+/// 読み上げ対象のアプリかだけを決める。全体の停止・消音は声を出す段階 (speak_now) で見て、
+/// 止めている間も小窓には吹き出しを出す。
 /// すべて読み上げモードなら全部読む。そうでなければ個別の設定に従う。
 /// 未設定の既定:
 /// - 直接届いた通知: カタログのアプリならON、それ以外 (見つけたアプリ) はOFF (UIの「追加すると読み上げます」と一致)
 /// - ショートカット経由: ON (ユーザーがショートカット側で対象アプリに選んだもの。MAS版はアプリ別ON/OFFを出さない)
 fn should_speak(settings: &AppSettings, app_id: &str, route: Route) -> bool {
-    if !settings.speech_enabled() {
-        return false;
-    }
     // readapp自身の通知は設定確認用なので、アプリ別設定に関わらず読む
     if app_id == SELF_APP_ID || settings.speak_all.lock().map(|b| *b).unwrap_or(false) {
         return true;
@@ -1062,7 +1061,7 @@ pub(crate) fn speak_notification(
     speak_now(settings, app_id, title, body, match route {
         Route::Direct => telemetry::Trigger::Direct,
         Route::Shortcut => telemetry::Trigger::Shortcut,
-    })
+    }, None)
 }
 
 /// AI変換の待ち行列へ入れる前に、受信時点で読み上げ対象を確定する。
@@ -1137,11 +1136,18 @@ fn fresh_notification(settings: &AppSettings, app_id: &str, text: &str, route: R
 
 /// transform → speak (アプリ別ON/OFF判定なし)。キャラ口調ではアプリ名も渡し
 /// 「Claudeの作業、終わったみたいだよ」のように言えるようにする。
-pub(crate) fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body: &str, trigger: telemetry::Trigger) -> Option<String> {
-    if !settings.speech_enabled() {
-        return None;
-    }
-    let request = speech::system::request()?;
+/// 読み上げ停止・消音中は声を出さず、小窓に「読み上げなし」の吹き出しだけ出す。
+/// banner は直接監視で拾った通知バナーのID (吹き出しから通知を押すため)。
+pub(crate) fn speak_now(
+    settings: &AppSettings,
+    app_id: &str,
+    title: &str,
+    body: &str,
+    trigger: telemetry::Trigger,
+    banner: Option<&str>,
+) -> Option<String> {
+    // 停止後に変換が終わっても古い音声を鳴らさないよう、変換の前に取る
+    let request = if settings.speech_enabled() { speech::system::request() } else { None };
     let raw = if title.is_empty() {
         body.to_string()
     } else if body.is_empty() {
@@ -1155,13 +1161,50 @@ pub(crate) fn speak_now(settings: &AppSettings, app_id: &str, title: &str, body:
     }
     let label = app_label(settings, app_id);
     let text = transform::transform_text(settings, &raw, label.as_deref());
-    // 小窓へ先に記録する (再生側の「話し始めた」より必ず先に行があるように)。読めなかったら消す。
-    let line = companion::record(app_id, label.as_deref(), &text);
+    // 小窓へ先に記録する (再生側の「話し始めた」より必ず先に行があるように)。
+    let source = companion::Source {
+        app_id,
+        app_name: label.as_deref(),
+        banner,
+        openable: banner.is_some() || can_open_source_app(app_id, label.as_deref()),
+    };
+    let line = companion::record(&source, &text, request.is_some());
+    let Some(request) = request else {
+        return None;
+    };
     let queued = speech::system::speak(&text, &settings.voice_for(app_id), request, telemetry::Context::new(app_id, trigger), line);
     if !queued {
-        companion::discard(line);
+        // 受け付けた直後に止められた: 吹き出しは残し、読み上げなしにする
+        companion::mark(line, companion::LineState::Silent);
     }
     queued.then_some(text)
+}
+
+/// 吹き出しから開ける送り元か (readapp自身・試し読み・通知元不明は開かない)。
+fn can_open_source_app(app_id: &str, name: Option<&str>) -> bool {
+    cfg!(target_os = "macos")
+        && ![SELF_APP_ID, INTENT_APP_ID, "preview"].contains(&app_id)
+        && (catalog().iter().any(|a| a.id == app_id) || name.is_some_and(|n| !n.trim().is_empty()))
+}
+
+/// 通知を送ってきたアプリを開く。カタログのアプリは入っている版のバンドルIDで、それ以外は名前で開く。
+pub(crate) fn open_source_app(app_id: &str, name: Option<&str>) -> bool {
+    if !can_open_source_app(app_id, name) {
+        return false;
+    }
+    let open = |args: &[&str]| {
+        std::process::Command::new("open")
+            .args(args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if let Some((_, bundle)) = catalog().iter().find(|a| a.id == app_id).and_then(installed_bundle) {
+        if open(&["-b", bundle]) {
+            return true;
+        }
+    }
+    name.is_some_and(|n| open(&["-a", n.trim()]))
 }
 
 /// 読み上げ前の整形: 不可視文字 (メールのプレビュー埋め草等) を消し、空白を詰め、
@@ -1236,8 +1279,8 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
         match intent_target(&app) {
             IntentTarget::Always => {
                 record_received(&settings, INTENT_APP_ID, "", &text);
-                if settings.speech_enabled() && fresh_notification(&settings, INTENT_APP_ID, &text, Route::Shortcut) {
-                    speak_now(&settings, INTENT_APP_ID, "", &text, telemetry::Trigger::Shortcut);
+                if fresh_notification(&settings, INTENT_APP_ID, &text, Route::Shortcut) {
+                    speak_now(&settings, INTENT_APP_ID, "", &text, telemetry::Trigger::Shortcut, None);
                 }
             }
             IntentTarget::App { id, name } => {
@@ -1290,7 +1333,7 @@ fn test_speak(
     title: String,
     body: String,
 ) -> Result<String, String> {
-    Ok(speak_now(&state, &app_id, &title, &body, telemetry::Trigger::Preview).unwrap_or_default())
+    Ok(speak_now(&state, &app_id, &title, &body, telemetry::Trigger::Preview, None).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -1389,7 +1432,8 @@ pub fn run() {
             companion::companion_image,
             companion::set_companion_image,
             companion::show_companion,
-            companion::show_settings
+            companion::show_settings,
+            companion::companion_open
         ])
         .setup(|app| {
             speech::system::set_app_handle(app.handle().clone());
@@ -1561,17 +1605,31 @@ mod tests {
     }
 
     #[test]
-    fn global_off_blocks_all_notification_routes_and_previews() {
+    fn global_off_never_speaks_but_keeps_targets_for_the_companion() {
         let settings = AppSettings::default();
         *settings.speech_enabled.lock().unwrap() = false;
         *settings.speak_all.lock().unwrap() = true;
         for route in [Route::Direct, Route::Shortcut] {
             for app in [SELF_APP_ID, INTENT_APP_ID, "slack", "dev.test"] {
-                assert!(!should_speak(&settings, app, route));
+                // 対象のまま (小窓に吹き出しを出す) だが、声は出さない
+                assert!(should_speak(&settings, app, route));
                 assert!(speak_notification(&settings, app, "会議中", "", route).is_none());
             }
         }
-        assert!(speak_now(&settings, "preview", "試聴", "", telemetry::Trigger::Preview).is_none());
+        assert!(speak_now(&settings, "preview", "試聴", "", telemetry::Trigger::Preview, None).is_none());
+    }
+
+    #[test]
+    fn companion_bubbles_open_only_real_source_apps() {
+        // readapp自身・試し読み・通知元不明の吹き出しは開かない
+        for app in [SELF_APP_ID, INTENT_APP_ID, "preview"] {
+            assert!(!can_open_source_app(app, Some("readapp")));
+        }
+        // カタログのアプリはバンドルIDで、見つけたアプリは名前で開く
+        assert!(can_open_source_app("slack", None));
+        assert!(can_open_source_app("notion", Some("Notion")));
+        assert!(!can_open_source_app("notion", None));
+        assert!(!can_open_source_app("notion", Some("  ")));
     }
 
     #[test]
