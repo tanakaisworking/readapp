@@ -10,7 +10,7 @@ interface Props {
   onSelect: () => void;
 }
 
-// 声の選択肢1行。ホームとアプリ別の声で同じ見た目にする。
+// 声の選択肢1行 (キャラの編集で使う)。
 export function VoiceOption({ name, note, selected, premium = false, disabled = false, onSelect }: Props) {
   return (
     <li>

@@ -3,28 +3,31 @@ import { AnimatePresence, motion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CheckCircle2, Play } from "lucide-react";
-import { PersonaAvatar } from "@/components/persona-avatar";
 import { AppLogo } from "@/components/app-logo";
-import { PersonaPicker } from "@/components/persona-picker";
+import { CharacterImage } from "@/components/character-image";
+import { CharacterList } from "@/components/character-list";
 import { AutomationSetup } from "@/components/automation-setup";
-import { personaAccent, speechSample, type Persona } from "@/lib/apps";
+import type { FullState, Persona } from "@/lib/apps";
+import { styleLabel, styleSample } from "@/lib/characters";
+import type { SettingsApi } from "@/hooks/useSettings";
 import { cn } from "@/lib/utils";
 
 interface Props {
+  api: SettingsApi;
+  state: FullState;
   personas: Persona[];
+  customs: Record<string, string | null | undefined>;
   platform: string;
   edition: string;
   speaking: boolean;
   onPreview: () => void;
-  onPickDefaultPersona: (id: string) => void;
   onDone: () => void;
 }
 
-export function Onboarding({ personas, platform, edition, speaking, onPreview, onPickDefaultPersona, onDone }: Props) {
+export function Onboarding({ api, state, personas, customs, platform, edition, speaking, onPreview, onDone }: Props) {
   // 直接監視はdmg版のmacOSだけ。MAS版はショートカット経由のみ。
   const direct = platform === "macos" && edition !== "mas";
   const [step, setStep] = useState(0);
-  const [persona, setPersona] = useState("mio");
   const [granted, setGranted] = useState(false);
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [setupDone, setSetupDone] = useState(false);
@@ -65,18 +68,13 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
     if (ok) setGranted(true);
   };
 
-  const pick = (id: string) => {
-    setPersona(id);
-    void onPickDefaultPersona(id);
-  };
-
   const grant = async () => {
     await invoke("windows_ensure_access").catch(() => {});
     setGranted(true);
   };
 
-  const chosen = personas.find((p) => p.id === persona);
-  const accent = personaAccent(persona);
+  const chosen = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
+  const sample = chosen ? styleSample(chosen.style) : null;
 
   return (
     <div className="flex min-h-screen flex-col px-6 pb-5 pt-8">
@@ -199,10 +197,11 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
           {step === 2 && (
             <>
               <h1 className="text-[20px] font-semibold leading-snug">キャラを選ぶ</h1>
-              <p className="mt-2 text-[13px] text-muted">通知の言い方が変わります。あとで変えられます。</p>
+              <p className="mt-2 text-[13px] text-muted">選んだキャラが、その声と話し方で通知を知らせます。名前・画像・話し方・声は、あとで変えたり、新しく作ったりできます。</p>
               <div className="mt-4">
-                <PersonaPicker personas={personas} selected={persona} onSelect={pick} />
+                <CharacterList characters={state.characters} active={state.active_character} customs={customs} onSelect={(id) => void api.setActiveCharacter(id)} />
               </div>
+              {chosen && <p className="mt-3 text-center text-xs text-muted">{chosen.name} · {styleLabel(chosen.style, personas)}</p>}
               <div className="flex-1" />
               <button type="button" className="btn btn-primary btn-block mt-4" onClick={() => setStep(3)}>
                 つぎへ
@@ -215,12 +214,14 @@ export function Onboarding({ personas, platform, edition, speaking, onPreview, o
               <h1 className="text-[20px] font-semibold leading-snug">試しに喋る</h1>
               <p className="mt-2 text-[13px] text-muted">実際に声を聞いて、よければはじめましょう。</p>
               <div className="flex flex-1 flex-col items-center justify-center">
-                <PersonaAvatar accent={accent} size={80} speaking={speaking} dot={speaking} />
-                <div className="relative mt-4 max-w-[17rem] rounded-box bg-base-100 px-4 py-3 text-center shadow-xs">
-                  <span aria-hidden="true" className="absolute -top-1.5 left-1/2 size-3 -translate-x-1/2 rotate-45 rounded-[2px] bg-base-100" />
-                  <p className="relative whitespace-pre-line text-[14px] leading-relaxed">「{speechSample(persona, "persona")}」</p>
-                </div>
-                {chosen && <p className="mt-2 text-xs text-muted">{chosen.name} · {chosen.tagline}</p>}
+                <CharacterImage character={chosen} customs={customs} speaking={speaking} className="aspect-[3/4] w-28 rounded-box shadow-sm" />
+                {sample && (
+                  <div className="relative mt-4 max-w-[17rem] rounded-box bg-base-100 px-4 py-3 text-center shadow-xs">
+                    <span aria-hidden="true" className="absolute -top-1.5 left-1/2 size-3 -translate-x-1/2 rotate-45 rounded-[2px] bg-base-100" />
+                    <p className="relative whitespace-pre-line text-[14px] leading-relaxed">「{sample}」</p>
+                  </div>
+                )}
+                {chosen && <p className="mt-2 text-xs text-muted">{chosen.name} · {styleLabel(chosen.style, personas)}</p>}
               </div>
               <button type="button" className="btn btn-block" onClick={onPreview} disabled={speaking}>
                 {speaking ? <span className="loading loading-dots loading-xs" aria-hidden="true" /> : <Play aria-hidden="true" />}

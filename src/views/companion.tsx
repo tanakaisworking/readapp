@@ -4,12 +4,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowDown, Check, ImagePlus, Pin, Settings2, VolumeX, X } from "lucide-react";
+import { ArrowDown, Check, Pencil, Pin, Settings2, UsersRound, VolumeX, X } from "lucide-react";
 import { knownApp } from "@/lib/apps";
+import { OPEN_PICKER_EVENT, OPEN_PICKER_KEY, openCharacterEditor } from "@/lib/companion-window";
+import {
+  IMAGE_EXTENSIONS,
+  characterSrc,
+  migrateLegacyBackground,
+  useCustomImages,
+  type CharactersState,
+} from "@/lib/characters";
 import { cn } from "@/lib/utils";
 
-// 普段見せる小窓。好きな画像を背景に、読み上げた「ひとこと」を下から積み上げる。
+// 普段見せる小窓。いま話すキャラの画像を背景に、読み上げた「ひとこと」を下から積み上げる。
 // 設定はここに置かず、右上の歯車から設定ウィンドウを開く。
 
 interface Line {
@@ -26,24 +33,6 @@ interface Line {
 const PIN_KEY = "readapp.companion.pinned";
 /** 小窓でさかのぼれる件数 (Rust側 companion::FEED_LIMIT と同じ) */
 const FEED_LIMIT = 100;
-/** 背景の選択。"preset:<id>" か、取り込んだ画像の "custom" */
-const BACKGROUND_KEY = "readapp.companion.background";
-
-/** 同梱の背景 (public/companion/)。下4割はカードが重なるので、主役が上半分にいる画像にする */
-const PRESETS = [
-  { id: "cat", name: "ねこ" },
-  { id: "shiba", name: "柴犬" },
-  { id: "bunny", name: "うさぎ" },
-  { id: "buncho", name: "文鳥" },
-  { id: "girl", name: "女の子" },
-  { id: "boy", name: "男の子" },
-].map((p) => ({ ...p, src: `/companion/${p.id}.webp` }));
-const DEFAULT_PRESET = PRESETS[0];
-
-function loadChoice(): string | null {
-  try { return localStorage.getItem(BACKGROUND_KEY); } catch { return null; }
-}
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif"];
 /** 話している間に文字を流す速さ (1秒あたりの文字数)。声より少し先に出し切る */
 const CHARS_PER_SECOND = 9;
 
@@ -298,9 +287,9 @@ function Feed({ lines, onOpen, expanded, area }: { lines: Line[]; onOpen: (line:
 
 export function Companion() {
   const [lines, setLines] = useState<Line[]>([]);
-  // 取り込んだ画像 (undefined = 確認中, null = 無し)
-  const [custom, setCustom] = useState<string | null | undefined>(undefined);
-  const [choice, setChoiceState] = useState<string | null>(loadChoice);
+  // 作ったキャラと、いま話すキャラ (背景はそのキャラの画像)
+  const [cast, setCast] = useState<CharactersState | null>(null);
+  const customs = useCustomImages(cast?.characters);
   const [picking, setPicking] = useState(false);
   const [dragging, setDragging] = useState(false);
   // 小窓を使っている間だけ吹き出しを上まで広げ、過去の通知をさかのぼれるようにする
@@ -329,11 +318,6 @@ export function Companion() {
     try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
   });
 
-  const setChoice = useCallback((value: string) => {
-    setChoiceState(value);
-    try { localStorage.setItem(BACKGROUND_KEY, value); } catch { /* 保存できなくても今は変わる */ }
-  }, []);
-
   useEffect(() => {
     let disposed = false;
     const offs: (() => void)[] = [];
@@ -348,8 +332,26 @@ export function Companion() {
       });
     }).then(keep).catch(() => {});
     listen<Line[]>("companion-feed", ({ payload }) => setLines(payload)).then(keep).catch(() => {});
+    // 設定の「背景と表示範囲」から開かれた時は、背景のシートも開く
+    const openPicker = () => {
+      try { localStorage.removeItem(OPEN_PICKER_KEY); } catch { /* 消せなくても開く */ }
+      setPicking(true);
+    };
+    listen(OPEN_PICKER_EVENT, openPicker).then(keep).catch(() => {});
+    try { if (localStorage.getItem(OPEN_PICKER_KEY) === "1") openPicker(); } catch { /* 読めなければ開かない */ }
     invoke<Line[]>("companion_feed").then((feed) => !disposed && setLines((cur) => (cur.length ? cur : feed))).catch(() => {});
-    invoke<string | null>("companion_image").then((url) => !disposed && setCustom(url)).catch(() => setCustom(null));
+    let changed = false;
+    listen<CharactersState>("characters-changed", ({ payload }) => {
+      changed = true;
+      setCast(payload);
+    }).then(keep).catch(() => {});
+    invoke<CharactersState & { migrated_from_legacy: boolean }>("get_state")
+      .then((s) => {
+        if (disposed) return;
+        if (!changed) setCast({ characters: s.characters, active_character: s.active_character });
+        void migrateLegacyBackground(s);
+      })
+      .catch(() => {});
     return () => { disposed = true; offs.forEach((off) => off()); };
   }, []);
 
@@ -390,21 +392,23 @@ export function Companion() {
     return () => window.removeEventListener("keydown", onKey);
   }, [picking]);
 
+  const active = cast?.characters.find((c) => c.id === cast.active_character) ?? cast?.characters[0];
+
   const applyImage = useCallback(async (path: string) => {
     const ext = path.split(".").pop()?.toLowerCase() ?? "";
     if (!IMAGE_EXTENSIONS.includes(ext)) {
       setNotice("PNG・JPEG・WebP・GIFの画像を使えます");
       return;
     }
+    if (!active) return;
     try {
-      setCustom(await invoke<string>("set_companion_image", { path }));
-      setChoice("custom");
+      await invoke<string>("set_character_image", { id: active.id, path });
     } catch (e) {
       setNotice(e === "too_large" ? "20MBまでの画像を使えます" : "画像を読み込めませんでした");
     }
-  }, [setChoice]);
+  }, [active]);
 
-  // 画像をウィンドウへドラッグすると背景を差し替える
+  // 画像をウィンドウへドラッグすると、いまのキャラの画像を差し替える
   useEffect(() => {
     let off: (() => void) | undefined;
     let disposed = false;
@@ -455,19 +459,11 @@ export function Companion() {
     void getCurrentWindow().startDragging().catch(() => {});
   };
 
-  const pickFile = async () => {
-    const picked = await open({ multiple: false, directory: false, filters: [{ name: "画像", extensions: IMAGE_EXTENSIONS }] }).catch(() => null);
-    if (typeof picked === "string") await applyImage(picked);
+  const background = cast ? characterSrc(active, customs) : null;
+  const choose = (id: string) => {
+    setCast((cur) => (cur ? { ...cur, active_character: id } : cur));
+    void invoke("set_active_character", { id }).catch(() => setNotice("キャラを切り替えられませんでした"));
   };
-
-  // 何も選んでいなければ、取り込んだ画像 (以前の版で設定したもの) か、最初のプリセット
-  const preset = PRESETS.find((p) => choice === `preset:${p.id}`);
-  const background = preset
-    ? preset.src
-    : choice === "custom" || choice === null
-      ? custom === undefined ? null : custom ?? DEFAULT_PRESET.src
-      : DEFAULT_PRESET.src;
-  const selected = preset ? preset.id : background === custom && custom ? "custom" : DEFAULT_PRESET.id;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -499,7 +495,7 @@ export function Companion() {
 
         <div className="absolute right-2.5 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
           {[
-            { label: "背景を選ぶ", icon: <ImagePlus aria-hidden="true" />, onClick: () => setPicking(true), pressed: undefined },
+            { label: "キャラを選ぶ", icon: <UsersRound aria-hidden="true" />, onClick: () => setPicking(true), pressed: undefined },
             { label: pinned ? "手前に固定をやめる" : "手前に固定", icon: <Pin aria-hidden="true" />, onClick: () => setPinned(!pinned), pressed: pinned },
             { label: "設定を開く", icon: <Settings2 aria-hidden="true" />, onClick: () => void invoke("show_settings").catch(() => {}), pressed: undefined },
           ].map((b) => (
@@ -560,13 +556,13 @@ export function Companion() {
 
         <Feed lines={lines} onOpen={openLine} expanded={(focused || picking) && !adjusting} area={area} />
 
-        {/* 背景を選ぶシート */}
+        {/* キャラを選ぶシート (吹き出しの範囲もここで変える) */}
         <AnimatePresence>
           {picking && (
             <>
               {!adjusting && <motion.button
                 type="button"
-                aria-label="背景の選択を閉じる"
+                aria-label="キャラの選択を閉じる"
                 tabIndex={-1}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -576,7 +572,7 @@ export function Companion() {
               />}
               <motion.section
                 role="dialog"
-                aria-label="背景を選ぶ"
+                aria-label="キャラを選ぶ"
                 tabIndex={-1}
                 autoFocus
                 layout
@@ -588,7 +584,7 @@ export function Companion() {
               >
                 {!adjusting && (
                   <div className="flex items-center">
-                    <h2 className="text-[13px] font-semibold">背景を選ぶ</h2>
+                    <h2 className="text-[13px] font-semibold">キャラを選ぶ</h2>
                     <button type="button" aria-label="閉じる" onClick={() => setPicking(false)} className="btn btn-ghost btn-circle btn-xs ms-auto">
                       <X aria-hidden="true" />
                     </button>
@@ -615,24 +611,19 @@ export function Companion() {
                 </div>
                 {!adjusting && (<>
                 <ul className="mt-3 grid grid-cols-4 gap-2">
-                  {PRESETS.map((p) => (
-                    <BackgroundTile key={p.id} name={p.name} src={p.src} selected={selected === p.id} onSelect={() => setChoice(`preset:${p.id}`)} />
+                  {cast?.characters.map((c) => (
+                    <BackgroundTile key={c.id} name={c.name} src={characterSrc(c, customs)} selected={c.id === active?.id} onSelect={() => choose(c.id)} />
                   ))}
-                  {custom ? (
-                    <BackgroundTile name="自分の画像" src={custom} selected={selected === "custom"} onSelect={() => setChoice("custom")} />
-                  ) : null}
-                  <li>
-                    <button
-                      type="button"
-                      onClick={() => void pickFile()}
-                      className="flex aspect-[3/4] w-full flex-col items-center justify-center gap-1 rounded-field border border-dashed border-base-content/25 text-muted transition-colors hover:border-primary hover:text-primary"
-                    >
-                      <ImagePlus className="size-4" aria-hidden="true" />
-                      <span className="text-[10px] font-medium leading-tight">画像を<br />選ぶ</span>
-                    </button>
-                  </li>
                 </ul>
-                <p className="mt-2.5 text-[11px] text-muted">好きな画像を、この窓にドロップしても変えられます。</p>
+                {active && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted">画像をこの窓にドロップすると、{active.name}の画像になります。</p>
+                    <button type="button" className="btn btn-sm shrink-0" onClick={() => void openCharacterEditor(active.id)}>
+                      <Pencil aria-hidden="true" />
+                      編集
+                    </button>
+                  </div>
+                )}
                 </>)}
               </motion.section>
             </>
@@ -649,7 +640,7 @@ export function Companion() {
               transition={{ duration: 0.12 }}
               className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-primary/15 shadow-[inset_0_0_0_4px_var(--color-primary)]"
             >
-              <span className="rounded-full bg-base-100/95 px-4 py-2 text-[13px] font-semibold shadow-md">離すと背景になります</span>
+              <span className="rounded-full bg-base-100/95 px-4 py-2 text-[13px] font-semibold shadow-md">離すと{active?.name ?? "キャラ"}の画像になります</span>
             </motion.div>
           )}
         </AnimatePresence>
@@ -658,7 +649,7 @@ export function Companion() {
   );
 }
 
-function BackgroundTile({ name, src, selected, onSelect }: { name: string; src: string; selected: boolean; onSelect: () => void }) {
+function BackgroundTile({ name, src, selected, onSelect }: { name: string; src: string | null; selected: boolean; onSelect: () => void }) {
   return (
     <li>
       <button type="button" aria-pressed={selected} onClick={onSelect} className="group/tile block w-full text-left">
@@ -668,14 +659,14 @@ function BackgroundTile({ name, src, selected, onSelect }: { name: string; src: 
             selected ? "ring-2 ring-primary" : "group-hover/tile:ring-2 group-hover/tile:ring-base-content/20",
           )}
         >
-          <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" />
+          {src ? <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" /> : <span className="block size-full bg-base-300" />}
           {selected && (
             <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-primary text-primary-content" aria-hidden="true">
               <Check className="size-2.5" strokeWidth={3} />
             </span>
           )}
         </span>
-        <span className="mt-1 block truncate text-center text-[10px] font-medium text-muted">{name}</span>
+        <span className="mt-1 line-clamp-2 text-center text-[10px] font-medium leading-snug text-muted">{name}</span>
       </button>
     </li>
   );

@@ -1,4 +1,5 @@
 import catalog from "./catalog.json";
+import type { Character } from "./characters";
 
 export interface KnownApp {
   id: string;
@@ -46,41 +47,21 @@ export interface FullState {
   /** 全体の読み上げ。OFFで再生中・待機中の音声も停止 */
   speech_enabled: boolean;
   names: Record<string, string>;
+  /** いまのキャラの話し方・口調・声 (表示用。変えるのはキャラ側) */
   mode: string;
   persona: string;
   voice: string;
-  /** アプリごとの声 (app_id → 声ID)。無いアプリは voice を使う */
-  app_voices: Record<string, string>;
+  characters: Character[];
+  active_character: string;
+  /** 旧設定から引き継いだ直後 */
+  migrated_from_legacy: boolean;
+  /** アプリごとの担当キャラ (app_id → キャラID)。無いアプリは、いま話すキャラが読む */
+  app_characters: Record<string, string>;
   /** 読み上げの音量 (0〜100 %) */
   volume: number;
   onboarded: boolean;
   /** Dockにアイコンを出す (macOS。既定は出さない) */
   show_in_dock: boolean;
-}
-
-export const PERSONA_ACCENTS: Record<string, string> = {
-  mio: "#F2A7C3",
-  aoi: "#8FC1F0",
-  ren: "#F0A35C",
-  shiro: "#B9A8F0",
-};
-
-// 吹き出しの見本。キャラの口調 (Rust側 persona instruction) に合わせる。
-const PERSONA_SAMPLES: Record<string, string> = {
-  mio: "Claudeの作業、\n終わったみたいだよ",
-  aoi: "Claudeの作業が\n完了したようです",
-  ren: "Claudeの作業、\n終わったってさ",
-  shiro: "Claude、作業完了。",
-};
-
-// 素文モードは通知文そのまま読む。
-export function speechSample(personaId: string, mode: string): string {
-  if (mode === "raw") return "作業が完了しました。";
-  return PERSONA_SAMPLES[personaId] ?? PERSONA_SAMPLES.mio;
-}
-
-export function personaAccent(id: string): string {
-  return PERSONA_ACCENTS[id] ?? "#B9A8F0";
 }
 
 export function knownApp(id: string): KnownApp {

@@ -65,11 +65,11 @@ function nextState(
 interface Props {
   /** アプリの詳細 (声の設定など) を開く */
   onOpenApp: (id: string) => void;
-  /** アプリごとの声を変えている時、その声の名前 */
-  voiceNameOf: (id: string) => string | null;
+  /** そのアプリの担当キャラの名前 (いなければ null) */
+  characterNameOf: (id: string) => string | null;
 }
 
-export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
+export function MasAppList({ onOpenApp, characterNameOf }: Props) {
   const [apps, setApps] = useState<MasApp[] | null>(null);
   const [setup, setSetup] = useState<SetupState>(loadState);
   // 次の状態を同期的に計算するための写し (押下時刻を確実に1回だけ使うため)
@@ -145,7 +145,7 @@ export function MasAppList({ onOpenApp, voiceNameOf }: Props) {
             <span className="flex items-center gap-1 truncate text-xs text-muted">
               {ok && <Check className="size-3 text-success" strokeWidth={3} aria-hidden="true" />}
               {status}
-              {voiceNameOf(app.id) && `・${voiceNameOf(app.id)}の声`}
+              {characterNameOf(app.id) && `・${characterNameOf(app.id)}が担当`}
             </span>
           </span>
         </button>

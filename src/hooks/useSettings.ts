@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { KNOWN_APPS, type FullState, type Persona } from "@/lib/apps";
+import { migrateLegacyBackground, type Character, type CharactersState } from "@/lib/characters";
 
 export interface GeminiByokStatus { supported: boolean; configured: boolean }
 export interface SpeechIssue {
@@ -17,6 +18,20 @@ export const SPEND_CAP_MESSAGE = "自分のGeminiプロジェクトが月の利�
 export function issueBadge(issue: SpeechIssue): string {
   if (issue.message === SPEND_CAP_MESSAGE) return "利用額の上限";
   return { quota: "使用上限", billing: "課金を確認", authentication: "キーを確認", connection: "接続を確認" }[issue.kind];
+}
+
+/** キャラの一覧が変わった時に、いまのキャラから決まる表示用の値も合わせる */
+function withCharacters(s: FullState, next: CharactersState): FullState {
+  const active = next.characters.find((c) => c.id === next.active_character) ?? next.characters[0];
+  if (!active) return s;
+  return {
+    ...s,
+    characters: next.characters,
+    active_character: active.id,
+    voice: active.voice,
+    persona: active.style,
+    mode: active.style === "raw" ? "raw" : "persona",
+  };
 }
 
 export function useSettings() {
@@ -69,6 +84,7 @@ export function useSettings() {
     }).catch(() => {}).then(async () => {
       const initial = await invoke<FullState>("get_state");
       if (!disposed) setState(controls ? { ...initial, ...controls } : initial);
+      void migrateLegacyBackground(initial);
     }).catch(() => {});
     invoke<string>("get_platform").then(setPlatform).catch(() => {});
     invoke<string>("get_edition").then(setEdition).catch(() => {});
@@ -76,6 +92,16 @@ export function useSettings() {
     invoke<boolean>("cloud_tts_configured").then(setCloudTtsConfigured).catch(() => {});
     void refreshGeminiByok();
     return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  // 小窓などほかの窓でキャラを選んだ・直した時も反映する
+  useEffect(() => {
+    let disposed = false;
+    let off: UnlistenFn | undefined;
+    listen<CharactersState>("characters-changed", ({ payload }) => {
+      if (!disposed) setState((s) => (s ? withCharacters(s, payload) : s));
+    }).then((f) => (disposed ? f() : (off = f))).catch(() => {});
+    return () => { disposed = true; off?.(); };
   }, []);
 
   const saveGeminiKey = useCallback(async (key: string) => {
@@ -108,30 +134,61 @@ export function useSettings() {
     await invoke("set_speech_enabled", { enabled: v });
     setState((s) => (s ? { ...s, speech_enabled: v } : s));
   }, []);
-  const setMode = useCallback(async (v: string) => {
-    await invoke("set_mode", { mode: v });
-    setState((s) => (s ? { ...s, mode: v } : s));
+  /** いま話すキャラを選ぶ */
+  const setActiveCharacter = useCallback(async (id: string) => {
+    setState((s) => (s ? withCharacters(s, { characters: s.characters, active_character: id }) : s));
+    await invoke("set_active_character", { id });
   }, []);
 
-  const setPersona = useCallback(async (v: string) => {
-    await invoke("set_persona", { personaId: v });
-    setState((s) => (s ? { ...s, persona: v } : s));
+  /** 新しいキャラを作る (まだ選ばない) */
+  const createCharacter = useCallback(async (): Promise<Character> => {
+    const created = await invoke<Character>("create_character");
+    setState((s) => (s && !s.characters.some((c) => c.id === created.id)
+      ? withCharacters(s, { characters: [...s.characters, created], active_character: s.active_character })
+      : s));
+    return created;
   }, []);
 
-  const setVoice = useCallback(async (v: string) => {
-    await invoke("set_voice", { voiceId: v });
-    setState((s) => (s ? { ...s, voice: v } : s));
-  }, []);
-
-  /** アプリごとの声。null で解除 (いつもの声に戻す) */
-  const setAppVoice = useCallback(async (appId: string, voiceId: string | null) => {
-    await invoke("set_app_voice", { appId, voiceId });
+  /** キャラを直す。先に表示を変え、保存できなければ元に戻す */
+  const updateCharacter = useCallback(async (next: Character) => {
+    let before: Character[] | null = null;
     setState((s) => {
       if (!s) return s;
-      const app_voices = { ...s.app_voices };
-      if (voiceId) app_voices[appId] = voiceId;
-      else delete app_voices[appId];
-      return { ...s, app_voices };
+      before = s.characters;
+      return withCharacters(s, { characters: s.characters.map((c) => (c.id === next.id ? next : c)), active_character: s.active_character });
+    });
+    try {
+      const saved = await invoke<Character>("update_character", { character: next });
+      setState((s) => (s ? withCharacters(s, { characters: s.characters.map((c) => (c.id === saved.id ? saved : c)), active_character: s.active_character }) : s));
+    } catch (e) {
+      const restore = before;
+      if (restore) setState((s) => (s ? withCharacters(s, { characters: restore, active_character: s.active_character }) : s));
+      throw e;
+    }
+  }, []);
+
+  const deleteCharacter = useCallback(async (id: string) => {
+    await invoke("delete_character", { id });
+    const next = await invoke<FullState>("get_state");
+    setState((s) => (s ? { ...withCharacters(s, next), app_characters: next.app_characters } : s));
+  }, []);
+
+  /** 画像を取り込んで、そのキャラの画像にする */
+  const setCharacterImage = useCallback(async (id: string, path: string): Promise<string> => {
+    const url = await invoke<string>("set_character_image", { id, path });
+    setState((s) => (s ? withCharacters(s, { characters: s.characters.map((c) => (c.id === id ? { ...c, image: "custom" } : c)), active_character: s.active_character }) : s));
+    return url;
+  }, []);
+
+  /** アプリの担当キャラ。null で解除 (いま話すキャラが読む) */
+  const setAppCharacter = useCallback(async (appId: string, characterId: string | null) => {
+    await invoke("set_app_character", { appId, characterId });
+    setState((s) => {
+      if (!s) return s;
+      const app_characters = { ...s.app_characters };
+      if (characterId) app_characters[appId] = characterId;
+      else delete app_characters[appId];
+      return { ...s, app_characters };
     });
   }, []);
 
@@ -152,8 +209,8 @@ export function useSettings() {
   }, []);
 
   const speak = useCallback(
-    async (appId: string, title: string, body: string): Promise<string> => {
-      return invoke<string>("test_speak", { appId, title, body });
+    async (appId: string, title: string, body: string, characterId?: string): Promise<string> => {
+      return invoke<string>("test_speak", { appId, title, body, characterId: characterId ?? null });
     },
     [],
   );
@@ -173,10 +230,12 @@ export function useSettings() {
     setEnabled,
     setSpeakAll,
     setSpeechEnabled,
-    setMode,
-    setPersona,
-    setVoice,
-    setAppVoice,
+    setActiveCharacter,
+    createCharacter,
+    updateCharacter,
+    deleteCharacter,
+    setCharacterImage,
+    setAppCharacter,
     setVolume,
     setOnboarded,
     setShowInDock,

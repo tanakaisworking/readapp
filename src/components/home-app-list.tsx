@@ -11,10 +11,11 @@ interface Props {
   api: SettingsApi;
   state: FullState;
   onOpenApp: (id: string) => void;
-  voiceNameOf: (id: string) => string | null;
+  /** そのアプリの担当キャラの名前 (いなければ null) */
+  characterNameOf: (id: string) => string | null;
 }
 
-export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
+export function HomeAppList({ api, state, onOpenApp, characterNameOf }: Props) {
   const [observed, setObserved] = useState<{ id: string; name: string }[]>([]);
   // readapp自身のテスト通知は常に読むので、切り替えの対象にしない。
   const extraIds = Object.keys(state.enabled).filter((id) => id !== "readapp" && !KNOWN_APPS.some((a) => a.id === id));
@@ -47,7 +48,7 @@ export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
 
   const appRow = (app: (typeof apps)[number]) => {
     const name = state.names[app.id] ?? app.name;
-    const voice = voiceNameOf(app.id);
+    const character = characterNameOf(app.id);
     return (
       <li key={app.id} className="list-row items-center gap-3 px-3 py-2">
         <button
@@ -59,7 +60,7 @@ export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
           <AppAvatar name={name} color={app.color} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{name}</span>
-            {voice && <span className="block truncate text-xs text-muted">{voice}の声</span>}
+            {character && <span className="block truncate text-xs text-muted">{character}が担当</span>}
           </span>
           <ChevronRight className="size-4 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
         </button>
@@ -86,7 +87,7 @@ export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
           </span>
           <div className="list-col-grow min-w-0">
             <p className="text-sm font-medium">すべての通知</p>
-            <p className="truncate text-xs text-muted">{state.speak_all ? "どのアプリの通知も読み上げます" : "選んだアプリだけ読み上げます"}</p>
+            <p className="truncate text-xs text-muted">{state.speak_all ? "どのアプリの通知も読み上げます" : "オンにすると、下にないアプリも読み上げます"}</p>
           </div>
           <input
             type="checkbox"
@@ -101,11 +102,11 @@ export function HomeAppList({ api, state, onOpenApp, voiceNameOf }: Props) {
       </ul>
       <details className="collapse collapse-arrow collapse-compact rounded-none rounded-b-box border-t border-base-200">
         <summary className="collapse-title">
-          {state.speak_all ? "アプリごとの声" : "ほかのアプリ"}
+          {state.speak_all ? "アプリごとのキャラ" : "ほかのアプリ"}
           <span className="ml-auto text-xs font-normal text-muted">{state.speak_all ? apps.length : remaining.length}件</span>
         </summary>
         <div className="collapse-content">
-          {state.speak_all && <p className="pb-1 text-xs leading-relaxed text-muted">アプリを選ぶと、そのアプリだけ声を変えられます。</p>}
+          {state.speak_all && <p className="pb-1 text-xs leading-relaxed text-muted">アプリを選ぶと、そのアプリを読むキャラを決められます。</p>}
           <ul className="list -mx-4">{(state.speak_all ? apps : remaining).map(appRow)}</ul>
           {newcomers.length > 0 && (
             <div className="mt-3">

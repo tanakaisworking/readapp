@@ -66,6 +66,18 @@ pub fn personas() -> Vec<Persona> {
             tagline: "淡々と簡潔な助手".into(),
             instruction: "淡々と簡潔な助手の口調。装飾せず「〜の通知です」「〜の依頼です」とユーザーに知らせる。".into(),
         },
+        Persona {
+            id: "neko".into(),
+            name: "Neko".into(),
+            tagline: "語尾が「にゃん」のねこ".into(),
+            instruction: "落ち着いた丁寧なねこの口調。やわらかい敬語で知らせ、文の終わりは必ず「にゃん」で結ぶ。例:「〜のお知らせですにゃん」「〜届いていますにゃん」。".into(),
+        },
+        Persona {
+            id: "tori".into(),
+            name: "Piyo".into(),
+            tagline: "語尾が「ピヨ」の小鳥".into(),
+            instruction: "淡々と簡潔な小鳥の口調。装飾せず短く知らせ、文の終わりは必ず「ピヨ」で結ぶ。例:「〜の通知ですピヨ」「〜の依頼ですピヨ」。".into(),
+        },
     ]
 }
 
@@ -95,18 +107,36 @@ pub fn persona_instruction(id: &str) -> String {
     format!("{COMMON_RULES}\n{base}")
 }
 
+/// 自分で書いた口調。空ならMioの口調にする。
+pub fn custom_instruction(note: &str) -> String {
+    let note = note.trim();
+    if note.is_empty() {
+        return persona_instruction("mio");
+    }
+    format!("{COMMON_RULES}\n次の口調で、ユーザーに知らせる。{note}")
+}
+
+/// 変換の振り分け (いま話すキャラで)。
+pub fn transform_text(settings: &AppSettings, raw_text: &str, app_name: Option<&str>) -> String {
+    transform_text_as(settings, &settings.active(), raw_text, app_name)
+}
+
 /// 変換の振り分け。ローカルAIが使えない場合は素文にフォールバックする
 /// (読み上げ自体は止めない)。
 /// app_nameはキャラ変換の入力にだけ使う。素文・フォールバックでは読まない。
-pub fn transform_text(settings: &AppSettings, raw_text: &str, app_name: Option<&str>) -> String {
-    if settings.mode() == Mode::Raw {
+pub fn transform_text_as(settings: &AppSettings, character: &crate::characters::Character, raw_text: &str, app_name: Option<&str>) -> String {
+    if Mode::from_str(&character.style) == Mode::Raw {
         return raw::transform(raw_text);
     }
-    let persona_id = settings.persona();
+    let persona_id = character.style.clone();
     #[cfg(target_os = "macos")]
     {
         if let Some(helper) = settings.helper_path() {
-            let instruction = persona_instruction(&persona_id);
+            let instruction = if persona_id == crate::characters::STYLE_CUSTOM {
+                custom_instruction(&character.style_note)
+            } else {
+                persona_instruction(&persona_id)
+            };
             let input = persona_input(raw_text, app_name);
             match apple_foundation_model::transform(&input, &instruction, &helper) {
                 Ok(t) if !t.trim().is_empty() => return t,

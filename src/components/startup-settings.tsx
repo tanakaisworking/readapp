@@ -79,20 +79,20 @@ export function StartupSettings({ api, state }: { api: SettingsApi; state: FullS
         )}
         <li className="list-row items-center gap-3 px-4 py-3">
           <div className="list-col-grow min-w-0">
-            <label htmlFor="readapp-hide-dock" className="block text-sm font-medium">Dockにアイコンを出さない</label>
+            <label htmlFor="readapp-show-dock" className="block text-sm font-medium">Dockにアイコンを表示</label>
             <p className="text-xs leading-relaxed text-muted">
               {state.show_in_dock
-                ? "Dockに表示しています。クリックすると小窓を開きます。"
-                : "メニューバーのアイコンだけで使います。"}
+                ? "Dockのアイコンをクリックすると、小窓を開きます。"
+                : "オフの間は、メニューバーのアイコンから使います。"}
             </p>
           </div>
           <input
-            id="readapp-hide-dock"
+            id="readapp-show-dock"
             type="checkbox"
             role="switch"
             className="toggle toggle-primary toggle-sm"
-            checked={!state.show_in_dock}
-            onChange={(e) => void api.setShowInDock(!e.target.checked)}
+            checked={state.show_in_dock}
+            onChange={(e) => void api.setShowInDock(e.target.checked)}
           />
         </li>
       </ul>

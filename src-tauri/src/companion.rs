@@ -1,5 +1,5 @@
 //! 普段見せる小窓 (companion)。読み上げた「ひとこと」を直近分だけメモリに持ち、小窓へ届ける。
-//! 本文は保存しない (アプリを終了すれば消える)。背景画像だけをアプリのデータフォルダに置く。
+//! 本文は保存しない (アプリを終了すれば消える)。キャラに取り込んだ画像だけをアプリのデータフォルダに置く。
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,10 @@ const IMAGE_TYPES: [(&str, &str); 5] = [
     ("gif", "image/gif"),
 ];
 const IMAGE_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// 旧版の小窓の背景 (キャラごとの画像になる前の1枚)
 const IMAGE_STEM: &str = "background";
+/// キャラに取り込んだ画像の置き場 (companion/characters/<キャラID>.<拡張子>)
+const CHARACTER_DIR: &str = "characters";
 /// 小窓を開いたまま終了したかの印。あれば次の起動でも開く
 const OPEN_MARKER: &str = "open";
 
@@ -160,10 +163,10 @@ fn mime_for(path: &Path) -> Option<(&'static str, &'static str)> {
     IMAGE_TYPES.iter().find(|(e, _)| *e == ext).copied()
 }
 
-fn saved_image(dir: &Path) -> Option<PathBuf> {
+fn saved_image(dir: &Path, stem: &str) -> Option<PathBuf> {
     IMAGE_TYPES
         .iter()
-        .map(|(ext, _)| dir.join(format!("{IMAGE_STEM}.{ext}")))
+        .map(|(ext, _)| dir.join(format!("{stem}.{ext}")))
         .find(|p| p.is_file())
 }
 
@@ -173,35 +176,84 @@ fn data_url(path: &Path) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
-/// 保存済みの背景画像 (無ければ None)。
+fn character_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    image_dir(app).map(|d| d.join(CHARACTER_DIR))
+}
+
+/// キャラIDはファイル名に使うので、作ったキャラのIDだけを受ける。
+fn known_character(app: &AppHandle, id: &str) -> bool {
+    app.state::<crate::AppSettings>().character(id).is_some()
+}
+
+/// キャラに取り込んだ画像 (無ければ None)。
 #[tauri::command(async)]
-pub(crate) fn companion_image(app: AppHandle) -> Option<String> {
-    let path = saved_image(&image_dir(&app).ok()?)?;
+pub(crate) fn character_image(app: AppHandle, id: String) -> Option<String> {
+    if !known_character(&app, &id) {
+        return None;
+    }
+    let path = saved_image(&character_dir(&app).ok()?, &id)?;
     data_url(&path).ok()
 }
 
-/// 選んだ画像を背景として取り込む (元のファイルは動かさない)。
+/// 選んだ画像をキャラの画像として取り込む (元のファイルは動かさない)。
 #[tauri::command(async)]
-pub(crate) fn set_companion_image(app: AppHandle, path: String) -> Result<String, String> {
+pub(crate) fn set_character_image(app: AppHandle, id: String, path: String) -> Result<String, String> {
+    if !known_character(&app, &id) {
+        return Err("not_found".to_string());
+    }
     let source = PathBuf::from(&path);
     let (ext, _) = mime_for(&source).ok_or("unsupported")?;
     let size = std::fs::metadata(&source).map_err(|e| e.to_string())?.len();
     if size == 0 || size > IMAGE_MAX_BYTES {
         return Err("too_large".to_string());
     }
-    let dir = image_dir(&app)?;
+    let dir = character_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let target = dir.join(format!("{IMAGE_STEM}.{ext}"));
-    // 一時名へ書いてから差し替え、途中で失敗しても前の背景を残す
-    let partial = dir.join(format!("{IMAGE_STEM}.partial"));
+    // 一時名へ書いてから差し替え、途中で失敗しても前の画像を残す
+    let partial = dir.join(format!("{id}.partial"));
     std::fs::copy(&source, &partial).map_err(|e| e.to_string())?;
-    while let Some(old) = saved_image(&dir) {
+    let target = replace_image(&dir, &id, ext, &partial)?;
+    let url = data_url(&target)?;
+    let settings = app.state::<crate::AppSettings>();
+    if let Some(mut c) = settings.character(&id) {
+        c.image = crate::characters::IMAGE_CUSTOM.to_string();
+        settings.replace_character(c);
+    }
+    emit("character-image-changed", id);
+    Ok(url)
+}
+
+/// 同じキャラの古い画像 (拡張子違いも) を消してから置く。1キャラ1枚。
+fn replace_image(dir: &Path, stem: &str, ext: &str, from: &Path) -> Result<PathBuf, String> {
+    while let Some(old) = saved_image(dir, stem) {
         std::fs::remove_file(old).map_err(|e| e.to_string())?;
     }
-    std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
-    let url = data_url(&target)?;
-    emit("companion-image-changed", ());
-    Ok(url)
+    let target = dir.join(format!("{stem}.{ext}"));
+    std::fs::rename(from, &target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+/// キャラを消した時に、そのキャラの画像も消す。
+pub(crate) fn remove_character_image(app: &AppHandle, id: &str) {
+    let Ok(dir) = character_dir(app) else { return };
+    while let Some(old) = saved_image(&dir, id) {
+        if std::fs::remove_file(old).is_err() {
+            break;
+        }
+    }
+}
+
+/// 旧版の小窓に取り込んでいた背景を、いまのキャラの画像へ移す (1度だけ。移したら旧ファイルは無くなる)。
+pub(crate) fn migrate_legacy_background(app: &AppHandle, settings: &crate::AppSettings) {
+    let (Ok(old_dir), Ok(dir)) = (image_dir(app), character_dir(app)) else { return };
+    let Some(old) = saved_image(&old_dir, IMAGE_STEM) else { return };
+    let Some((ext, _)) = mime_for(&old) else { return };
+    let mut active = settings.active();
+    if std::fs::create_dir_all(&dir).is_err() || replace_image(&dir, &active.id, ext, &old).is_err() {
+        return;
+    }
+    active.image = crate::characters::IMAGE_CUSTOM.to_string();
+    settings.replace_character(active);
 }
 
 /// ウィンドウを開いて前に出す。macOSでは開くまで作らない (作るだけでアプリが前面に出るため)。
@@ -274,14 +326,19 @@ mod tests {
     }
 
     #[test]
-    fn replacing_background_keeps_one_file() {
+    fn replacing_image_keeps_one_file_per_character() {
         let dir = std::env::temp_dir().join(format!("readapp-companion-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("background.png"), b"a").unwrap();
-        assert_eq!(saved_image(&dir), Some(dir.join("background.png")));
-        std::fs::remove_file(dir.join("background.png")).unwrap();
-        std::fs::write(dir.join("background.webp"), b"b").unwrap();
-        assert_eq!(saved_image(&dir), Some(dir.join("background.webp")));
+        std::fs::write(dir.join("mio.png"), b"a").unwrap();
+        std::fs::write(dir.join("aoi.png"), b"c").unwrap();
+        assert_eq!(saved_image(&dir, "mio"), Some(dir.join("mio.png")));
+        std::fs::write(dir.join("next.partial"), b"b").unwrap();
+        let placed = replace_image(&dir, "mio", "webp", &dir.join("next.partial")).unwrap();
+        assert_eq!(placed, dir.join("mio.webp"));
+        assert_eq!(saved_image(&dir, "mio"), Some(dir.join("mio.webp")));
+        assert!(!dir.join("mio.png").exists());
+        // ほかのキャラの画像は残す
+        assert_eq!(saved_image(&dir, "aoi"), Some(dir.join("aoi.png")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

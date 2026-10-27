@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
+import { Check, CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppAvatar } from "@/components/app-avatar";
-import { VoiceOption } from "@/components/voice-option";
-import { knownApp, GEMINI_VOICES } from "@/lib/apps";
+import { CharacterImage } from "@/components/character-image";
+import { knownApp, type Persona } from "@/lib/apps";
+import { styleLabel, type Character } from "@/lib/characters";
+import { voiceName, type SystemVoice } from "@/lib/voices";
+import { cn } from "@/lib/utils";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
 
@@ -15,11 +18,14 @@ interface Props {
   platform: string;
   edition: string;
   speaking: boolean;
+  personas: Persona[];
+  customs: Record<string, string | null | undefined>;
+  systemVoices: SystemVoice[];
   onBack: () => void;
   onPreviewApp: (appId: string) => void;
 }
 
-export function AppDetail({ api, state, appId, platform, edition, speaking, onBack, onPreviewApp }: Props) {
+export function AppDetail({ api, state, appId, platform, edition, speaking, personas, customs, systemVoices, onBack, onPreviewApp }: Props) {
   const app = knownApp(appId);
   const appName = state.names[appId] ?? app.name;
   const on = isOn(state, appId);
@@ -29,16 +35,13 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
   const [checking, setChecking] = useState(false);
   const [axOn, setAxOn] = useState(false);
   const busy = useRef(false);
-  const [systemVoices, setSystemVoices] = useState<{ id: string; name: string }[]>([]);
-  const appVoice = state.app_voices[appId] ?? null;
+  // 担当キャラ (いなければ、いま話すキャラが読む)
+  const assigned = state.characters.some((c) => c.id === state.app_characters[appId]) ? state.app_characters[appId] : null;
+  const activeCharacter = state.characters.find((c) => c.id === state.active_character);
 
-  useEffect(() => {
-    invoke<{ id: string; name: string }[]>("get_system_voices").then(setSystemVoices).catch(() => {});
-  }, []);
-
-  // 声を選んだらすぐ、その声で試しに喋る
-  const pickVoice = async (voiceId: string | null) => {
-    await api.setAppVoice(appId, voiceId);
+  // キャラを選んだらすぐ、そのキャラで試しに喋る
+  const pickCharacter = async (characterId: string | null) => {
+    await api.setAppCharacter(appId, characterId);
     onPreviewApp(appId);
   };
 
@@ -115,12 +118,9 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
     : installed
       ? { label: "登録済み", tone: "badge-primary" }
       : { label: "未登録", tone: "badge-ghost" };
-  const voiceChoices = [
-    { id: null as string | null, name: "いつもの声", note: "ホームで選んだ声" },
-    ...(api.geminiByok?.configured || appVoice?.startsWith("gemini:")
-      ? GEMINI_VOICES.map((v) => ({ id: v.id as string | null, name: v.name, note: "Gemini · 自分のAPIキー" }))
-      : []),
-    ...systemVoices.map((v) => ({ id: v.id as string | null, name: v.name, note: "" })),
+  const characterChoices: { id: string | null; name: string; note: string; character: Character | undefined }[] = [
+    { id: null, name: "いま話すキャラに任せる", note: activeCharacter ? "今は" + activeCharacter.name + "が読みます" : "", character: activeCharacter },
+    ...state.characters.map((c) => ({ id: c.id as string | null, name: c.name, note: voiceName(c.voice, systemVoices) + " · " + styleLabel(c.style, personas), character: c })),
   ];
 
   return (
@@ -158,20 +158,34 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, onBa
 
       {on && (
         <>
-          <section aria-labelledby="app-voice-heading">
-            <h2 id="app-voice-heading" className="section-label">このアプリの声</h2>
-            <p className="mt-1 px-1 text-xs leading-relaxed text-muted">{appName}の通知だけ、別の声で読み上げられます。</p>
+          <section aria-labelledby="app-character-heading">
+            <h2 id="app-character-heading" className="section-label">このアプリのキャラ</h2>
+            <p className="mt-1 px-1 text-xs leading-relaxed text-muted">{appName}の通知を読むキャラを決められます。そのキャラの声と話し方で読みます。</p>
             <ul className="surface mt-2 space-y-0.5 p-1.5">
-              {voiceChoices.map((v) => (
-                <VoiceOption
-                  key={v.id ?? "default"}
-                  name={v.name}
-                  note={v.note}
-                  selected={appVoice === v.id}
-                  disabled={speaking || (!!v.id?.startsWith("gemini:") && !api.geminiByok?.configured)}
-                  onSelect={() => void pickVoice(v.id)}
-                />
-              ))}
+              {characterChoices.map((c) => {
+                const selected = assigned === c.id;
+                return (
+                  <li key={c.id ?? "active"}>
+                    <button
+                      type="button"
+                      aria-pressed={selected}
+                      disabled={speaking}
+                      onClick={() => void pickCharacter(c.id)}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-field px-2.5 py-2 text-left transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-60",
+                        selected ? "bg-primary/10" : "hover:bg-base-200",
+                      )}
+                    >
+                      <CharacterImage character={c.character} customs={customs} className={cn("size-9 rounded-[10px]", c.id === null && "opacity-70")} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{c.name}</span>
+                        {c.note && <span className="block truncate text-xs text-muted">{c.note}</span>}
+                      </span>
+                      <Check className={cn("size-4 shrink-0 text-primary transition-opacity", selected ? "opacity-100" : "opacity-0")} aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </section>
 

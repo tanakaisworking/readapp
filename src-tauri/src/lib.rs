@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[cfg(target_os = "macos")]
 mod menubar;
+mod characters;
 mod companion;
 pub mod notifications;
 pub mod speech;
@@ -18,10 +19,11 @@ use tauri::Manager;
 use tauri::State;
 
 use crate::transform::Mode;
+use crate::characters::Character;
 
 /// アプリ別の読み上げ設定。JSONで永続化する (M5)。
-/// 考え方は「キャラを決める→対象アプリを決める」。
-/// persona/voice/mode はキャラ側の持ち物で全体共有。アプリ側はON/OFFと、声の上書き (任意)。
+/// 考え方は「キャラを作って選ぶ→対象アプリを決める」。
+/// 名前・画像・声・話し方はキャラの持ち物 (characters)。アプリ側はON/OFFと、担当キャラ (任意)。
 pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
     /// すべて読み上げモード。ONなら個別設定に関わらず読む。
@@ -30,11 +32,14 @@ pub struct AppSettings {
     speech_enabled: Mutex<bool>,
     /// 表示名の上書き (ファイル選択で追加したアプリ用)。
     names: Mutex<HashMap<String, String>>,
-    mode: Mutex<String>,
-    persona: Mutex<String>,
-    voice: Mutex<String>,
-    /// アプリごとの声 (app_id → 声ID)。無いアプリは全体の声を使う。
-    app_voices: Mutex<HashMap<String, String>>,
+    /// 作ったキャラ (1人以上)
+    characters: Mutex<Vec<Character>>,
+    /// いま話すキャラのID
+    active_character: Mutex<String>,
+    /// 旧設定 (キャラが1つの形式) から引き継いだ直後 (小窓の背景の引き継ぎ用。実行時のみ)
+    migrated_from_legacy: Mutex<bool>,
+    /// アプリごとの担当キャラ (app_id → キャラID)。無いアプリは、いま話すキャラが読む。
+    app_characters: Mutex<HashMap<String, String>>,
     /// 読み上げの音量 (0〜100 %)。
     volume: Mutex<u8>,
     onboarded: Mutex<bool>,
@@ -81,6 +86,7 @@ struct SavedSettings {
     speech_enabled: bool,
     #[serde(default)]
     names: HashMap<String, String>,
+    /// 旧形式の項目。読み込みでは引き継ぎに使い、書き出しでは今のキャラの値を入れる (古い版へ戻した時用)
     #[serde(default = "persona_mode_default")]
     mode: String,
     #[serde(default = "default_persona_id")]
@@ -88,6 +94,13 @@ struct SavedSettings {
     #[serde(default = "default_voice_id")]
     voice: String,
     #[serde(default)]
+    characters: Vec<Character>,
+    #[serde(default)]
+    active_character: String,
+    #[serde(default)]
+    app_characters: HashMap<String, String>,
+    /// 旧形式 (アプリごとの声)。読み込み時に担当キャラへ移し、書き出さない
+    #[serde(default, skip_serializing)]
     app_voices: HashMap<String, String>,
     #[serde(default = "default_volume")]
     volume: u8,
@@ -124,10 +137,10 @@ impl Default for AppSettings {
             speak_all: Mutex::new(false),
             speech_enabled: Mutex::new(true),
             names: Mutex::new(HashMap::new()),
-            mode: Mutex::new(persona_mode_default()),
-            persona: Mutex::new(default_persona_id()),
-            voice: Mutex::new(default_voice_id()),
-            app_voices: Mutex::new(HashMap::new()),
+            characters: Mutex::new(characters::defaults(&default_voice_id())),
+            active_character: Mutex::new(default_persona_id()),
+            migrated_from_legacy: Mutex::new(false),
+            app_characters: Mutex::new(HashMap::new()),
             volume: Mutex::new(default_volume()),
             onboarded: Mutex::new(false),
             show_in_dock: Mutex::new(false),
@@ -170,18 +183,66 @@ impl AppSettings {
         self.show_in_dock.lock().map(|b| *b).unwrap_or(false)
     }
 
-    pub fn mode(&self) -> Mode {
-        self.mode
-            .lock()
-            .map(|m| Mode::from_str(m.as_str()))
-            .unwrap_or(Mode::Persona)
+    pub fn characters(&self) -> Vec<Character> {
+        self.characters.lock().map(|c| c.clone()).unwrap_or_default()
     }
 
+    pub fn character(&self, id: &str) -> Option<Character> {
+        self.characters.lock().ok()?.iter().find(|c| c.id == id).cloned()
+    }
+
+    /// いま話すキャラ。見つからなければ先頭 (キャラは必ず1人以上いる)。
+    pub fn active(&self) -> Character {
+        let id = self.active_character.lock().map(|a| a.clone()).unwrap_or_default();
+        let list = self.characters();
+        list.iter()
+            .find(|c| c.id == id)
+            .or_else(|| list.first())
+            .cloned()
+            .unwrap_or_else(|| characters::defaults(&default_voice_id()).remove(0))
+    }
+
+    pub fn active_id(&self) -> String {
+        self.active().id
+    }
+
+    pub fn mode(&self) -> Mode {
+        Mode::from_str(&self.active().style)
+    }
+
+    /// いまのキャラの話し方 (口調のid / raw / custom)
     pub fn persona(&self) -> String {
-        self.persona
-            .lock()
-            .map(|p| p.clone())
-            .unwrap_or_else(|_| default_persona_id())
+        self.active().style
+    }
+
+    /// キャラを書き換えて保存し、各ウィンドウへ知らせる。
+    fn edit_characters(&self, f: impl FnOnce(&mut Vec<Character>, &mut String) -> bool) -> bool {
+        let changed = match (self.characters.lock(), self.active_character.lock()) {
+            (Ok(mut list), Ok(mut active)) => f(&mut list, &mut active),
+            _ => false,
+        };
+        if changed {
+            self.save();
+            self.notify_characters();
+        }
+        changed
+    }
+
+    fn notify_characters(&self) {
+        if let Some(h) = self.app_handle.lock().ok().and_then(|h| h.clone()) {
+            h.emit("characters-changed", CharactersState { characters: self.characters(), active_character: self.active_id() }).ok();
+        }
+    }
+
+    /// 同じIDのキャラを置き換える (画像の取り込みなど、検証済みの値だけ渡す)。
+    pub(crate) fn replace_character(&self, next: Character) {
+        self.edit_characters(|list, _| match list.iter_mut().find(|c| c.id == next.id) {
+            Some(c) if *c != next => {
+                *c = next;
+                true
+            }
+            _ => false,
+        });
     }
 
     /// 読み上げの音量 (0〜100 %)。
@@ -189,20 +250,23 @@ impl AppSettings {
         self.volume.lock().map(|v| *v).unwrap_or_else(|_| default_volume())
     }
 
-    /// そのアプリで使う声。アプリごとの声があればそれ、無ければ全体の声。
-    pub fn voice_for(&self, app_id: &str) -> String {
-        self.app_voices
+    /// そのアプリの通知を読むキャラ。担当キャラがいればそのキャラ、いなければいま話すキャラ。
+    pub fn character_for(&self, app_id: &str) -> Character {
+        self.app_characters
             .lock()
             .ok()
             .and_then(|m| m.get(app_id).cloned())
-            .unwrap_or_else(|| self.voice())
+            .and_then(|id| self.character(&id))
+            .unwrap_or_else(|| self.active())
+    }
+
+    /// そのアプリで使う声 (読むキャラの声)。
+    pub fn voice_for(&self, app_id: &str) -> String {
+        self.character_for(app_id).voice
     }
 
     pub fn voice(&self) -> String {
-        self.voice
-            .lock()
-            .map(|v| v.clone())
-            .unwrap_or_else(|_| default_voice_id())
+        self.active().voice
     }
 
     pub fn display_name(&self, app_id: &str) -> Option<String> {
@@ -269,15 +333,19 @@ impl AppSettings {
     }
 
     fn snapshot(&self) -> SavedSettings {
+        let active = self.active();
         SavedSettings {
             enabled: self.enabled.lock().map(|m| m.clone()).unwrap_or_default(),
             speak_all: self.speak_all.lock().map(|b| *b).unwrap_or(false),
             speech_enabled: self.speech_enabled(),
             names: self.names.lock().map(|m| m.clone()).unwrap_or_default(),
-            mode: self.mode.lock().map(|m| m.clone()).unwrap_or_else(|_| persona_mode_default()),
-            persona: self.persona.lock().map(|p| p.clone()).unwrap_or_else(|_| default_persona_id()),
-            voice: self.voice.lock().map(|v| v.clone()).unwrap_or_else(|_| default_voice_id()),
-            app_voices: self.app_voices.lock().map(|m| m.clone()).unwrap_or_default(),
+            mode: Mode::from_str(&active.style).as_str().to_string(),
+            persona: characters::legacy_persona(&active.style).to_string(),
+            voice: active.voice.clone(),
+            characters: self.characters(),
+            active_character: active.id,
+            app_characters: self.app_characters.lock().map(|m| m.clone()).unwrap_or_default(),
+            app_voices: HashMap::new(),
             volume: self.volume(),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
             show_in_dock: self.show_in_dock(),
@@ -314,19 +382,38 @@ impl AppSettings {
                         speech::system::set_enabled(*b);
                     }
                     if let Ok(mut m) = self.names.lock() {
-                        *m = saved.names;
+                        *m = saved.names.clone();
                     }
-                    if let Ok(mut m) = self.mode.lock() {
-                        *m = saved.mode;
+                    // キャラが1つだった旧形式は、選んでいたキャラへ声と話し方を引き継ぐ
+                    let (list, active) = if saved.characters.is_empty() {
+                        if let Ok(mut m) = self.migrated_from_legacy.lock() {
+                            *m = true;
+                        }
+                        characters::migrate(&saved.persona, &saved.voice, &saved.mode)
+                    } else {
+                        let mut list = saved.characters;
+                        characters::upgrade_defaults(&mut list);
+                        (list, saved.active_character)
+                    };
+                    let mut list = list;
+                    let mut assigned = saved.app_characters;
+                    // 旧版の「アプリごとの声」は、その声のキャラを担当にする
+                    if assigned.is_empty() && !saved.app_voices.is_empty() {
+                        let names = saved.names.clone();
+                        assigned = characters::assign_legacy_voices(&mut list, &active, &saved.app_voices, |id| {
+                            names.get(id).cloned()
+                                .or_else(|| catalog().iter().find(|a| a.id == id).map(|a| a.name.clone()))
+                                .unwrap_or_else(|| id.to_string())
+                        });
                     }
-                    if let Ok(mut p) = self.persona.lock() {
-                        *p = saved.persona;
+                    if let Ok(mut c) = self.characters.lock() {
+                        *c = list;
                     }
-                    if let Ok(mut vv) = self.voice.lock() {
-                        *vv = saved.voice;
+                    if let Ok(mut a) = self.active_character.lock() {
+                        *a = active;
                     }
-                    if let Ok(mut m) = self.app_voices.lock() {
-                        *m = saved.app_voices;
+                    if let Ok(mut m) = self.app_characters.lock() {
+                        *m = assigned;
                     }
                     if let Ok(mut v) = self.volume.lock() {
                         *v = saved.volume.min(speech::system::MAX_VOLUME);
@@ -349,8 +436,12 @@ impl AppSettings {
                     }
                     if let Some(p) = v.get("default_persona").and_then(|p| p.as_str()) {
                         if !p.is_empty() {
-                            if let Ok(mut cur) = self.persona.lock() {
-                                *cur = p.to_string();
+                            let (list, active) = characters::migrate(p, &default_voice_id(), &persona_mode_default());
+                            if let Ok(mut c) = self.characters.lock() {
+                                *c = list;
+                            }
+                            if let Ok(mut cur) = self.active_character.lock() {
+                                *cur = active;
                             }
                         }
                     }
@@ -452,15 +543,6 @@ fn set_app_enabled(
 }
 
 #[tauri::command]
-fn set_mode(state: State<'_, AppSettings>, mode: String) {
-    let mode = Mode::from_str(&mode).as_str().to_string();
-    if let Ok(mut m) = state.mode.lock() {
-        *m = mode;
-    }
-    state.save();
-}
-
-#[tauri::command]
 fn set_speak_all(state: State<'_, AppSettings>, enabled: bool) {
     if let Ok(mut b) = state.speak_all.lock() {
         *b = enabled;
@@ -474,39 +556,106 @@ fn set_speech_enabled(state: State<'_, AppSettings>, enabled: bool) {
     state.change_speech_enabled(enabled);
 }
 
+/// 話し方の一覧 (キャラを作る時に選ぶ口調)。
 #[tauri::command]
 fn get_personas() -> Vec<transform::Persona> {
     transform::personas()
 }
 
-#[tauri::command]
-fn set_persona(state: State<'_, AppSettings>, persona_id: String) {
-    if transform::personas().iter().any(|p| p.id == persona_id) {
-        if let Ok(mut p) = state.persona.lock() {
-            *p = persona_id;
-        }
-        state.save();
-    }
-}
-
-#[tauri::command]
-fn set_voice(state: State<'_, AppSettings>, voice_id: String) {
-    // 存在しない声の指定は捨てる (OS既定・プレミアム枠・搭載声のみ受ける)
+/// キャラに選べる声か (OS既定・プレミアム枠・Gemini・このMacにある声)。
+fn known_voice(voice_id: &str) -> bool {
     const PREMIUM: [&str; 2] = ["clear", "warm"];
-    let known = voice_id == "system"
-        || speech::premium::is_voice(&voice_id)
-        || speech::gemini::is_voice(&voice_id)
-        || PREMIUM.contains(&voice_id.as_str())
+    voice_id == "system"
+        || speech::premium::is_voice(voice_id)
+        || speech::gemini::is_voice(voice_id)
+        || PREMIUM.contains(&voice_id)
         || speech::system::list_voices()
             .iter()
-            .any(|v| v.id == voice_id);
-    if !known {
-        return;
+            .any(|v| v.id == voice_id)
+}
+
+#[derive(Clone, Serialize)]
+struct CharactersState {
+    characters: Vec<Character>,
+    active_character: String,
+}
+
+/// いま話すキャラを選ぶ。
+#[tauri::command]
+fn set_active_character(state: State<'_, AppSettings>, id: String) -> Result<(), String> {
+    let ok = state.edit_characters(|list, active| {
+        if !list.iter().any(|c| c.id == id) || *active == id {
+            return false;
+        }
+        *active = id.clone();
+        true
+    });
+    if ok || state.active_id() == id { Ok(()) } else { Err("not_found".to_string()) }
+}
+
+/// 新しいキャラを作って返す (まだ選ばない)。
+#[tauri::command]
+fn create_character(state: State<'_, AppSettings>) -> Result<Character, String> {
+    let voice = state.voice();
+    let mut created = None;
+    state.edit_characters(|list, _| {
+        if list.len() >= characters::CHARACTERS_MAX {
+            return false;
+        }
+        let c = characters::blank(list, &voice);
+        created = Some(c.clone());
+        list.push(c);
+        true
+    });
+    created.ok_or_else(|| "too_many".to_string())
+}
+
+/// キャラの名前・画像・声・話し方を書き換える。知らない値は受け付けない。
+#[tauri::command]
+fn update_character(state: State<'_, AppSettings>, character: Character) -> Result<Character, String> {
+    let name = characters::clean_name(&character.name).ok_or("empty_name")?;
+    if !characters::valid_image(&character.image) || !characters::valid_style(&character.style) || !known_voice(&character.voice) {
+        return Err("invalid".to_string());
     }
-    if let Ok(mut v) = state.voice.lock() {
-        *v = voice_id;
+    let next = Character { name, style_note: characters::clean_note(&character.style_note), ..character };
+    let mut found = false;
+    state.edit_characters(|list, _| {
+        let Some(c) = list.iter_mut().find(|c| c.id == next.id) else { return false };
+        found = true;
+        if *c == next {
+            return false;
+        }
+        *c = next.clone();
+        true
+    });
+    if found { Ok(next) } else { Err("not_found".to_string()) }
+}
+
+/// キャラを消す。最後の1人は消せない。いま話すキャラなら先頭のキャラに切り替える。
+#[tauri::command]
+fn delete_character(app: tauri::AppHandle, state: State<'_, AppSettings>, id: String) -> Result<(), String> {
+    let mut removed = false;
+    state.edit_characters(|list, active| {
+        if list.len() <= 1 || !list.iter().any(|c| c.id == id) {
+            return false;
+        }
+        list.retain(|c| c.id != id);
+        if *active == id {
+            *active = list[0].id.clone();
+        }
+        removed = true;
+        true
+    });
+    if !removed {
+        return Err("cannot_delete".to_string());
+    }
+    // そのキャラが担当していたアプリは、いま話すキャラが読む
+    if let Ok(mut m) = state.app_characters.lock() {
+        m.retain(|_, c| *c != id);
     }
     state.save();
+    companion::remove_character_image(&app, &id);
+    Ok(())
 }
 
 /// 読み上げの音量を設定する (0〜100 %。超える値は100に丸める)。
@@ -552,31 +701,24 @@ async fn delete_gemini_key() -> Result<(), String> {
         .await.map_err(|_| "APIキーを削除できませんでした".to_owned())?
 }
 
-/// アプリごとの声を設定する。None で解除 (全体の声に戻す)。
-/// OS既定、このMacにある声、Gemini BYOKの声を受け付ける。
+/// アプリの担当キャラを決める。None で解除 (いま話すキャラが読む)。作ったキャラだけを受け付ける。
 #[tauri::command]
-fn set_app_voice(state: State<'_, AppSettings>, app_id: String, voice_id: Option<String>) {
+fn set_app_character(state: State<'_, AppSettings>, app_id: String, character_id: Option<String>) -> Result<(), String> {
     let app_id = app_id.trim().to_string();
     if app_id.is_empty() {
-        return;
+        return Err("invalid".to_string());
     }
-    match voice_id {
-        None => {
-            if let Ok(mut m) = state.app_voices.lock() {
-                m.remove(&app_id);
-            }
-        }
-        Some(v) => {
-            let known = v == "system" || speech::gemini::is_voice(&v) || speech::system::list_voices().iter().any(|sv| sv.id == v);
-            if !known {
-                return;
-            }
-            if let Ok(mut m) = state.app_voices.lock() {
-                m.insert(app_id, v);
-            }
-        }
+    if character_id.as_deref().is_some_and(|id| state.character(id).is_none()) {
+        return Err("not_found".to_string());
+    }
+    if let Ok(mut m) = state.app_characters.lock() {
+        match character_id {
+            None => m.remove(&app_id),
+            Some(id) => m.insert(app_id, id),
+        };
     }
     state.save();
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -591,10 +733,15 @@ struct FullState {
     speak_all: bool,
     speech_enabled: bool,
     names: HashMap<String, String>,
+    /// いまのキャラの話し方 (persona / raw)・口調・声。表示用 (変えるのはキャラ側)
     mode: String,
     persona: String,
     voice: String,
-    app_voices: HashMap<String, String>,
+    characters: Vec<Character>,
+    active_character: String,
+    /// 旧設定から引き継いだ直後 (小窓の背景の選択を、いまのキャラへ移す)
+    migrated_from_legacy: bool,
+    app_characters: HashMap<String, String>,
     volume: u8,
     onboarded: bool,
     show_in_dock: bool,
@@ -603,15 +750,19 @@ struct FullState {
 #[tauri::command]
 fn get_state(state: State<'_, AppSettings>) -> FullState {
     let s = state.snapshot();
+    let active = state.active();
     FullState {
         enabled: s.enabled,
         speak_all: s.speak_all,
         speech_enabled: s.speech_enabled,
         names: s.names,
         mode: s.mode,
-        persona: s.persona,
+        persona: active.style,
         voice: s.voice,
-        app_voices: s.app_voices,
+        characters: s.characters,
+        active_character: s.active_character,
+        migrated_from_legacy: state.migrated_from_legacy.lock().map(|b| *b).unwrap_or(false),
+        app_characters: s.app_characters,
         volume: s.volume,
         onboarded: s.onboarded,
         show_in_dock: s.show_in_dock,
@@ -1231,6 +1382,19 @@ pub(crate) fn speak_now(
     trigger: telemetry::Trigger,
     banner: Option<&str>,
 ) -> Option<String> {
+    speak_now_as(settings, &settings.character_for(app_id), app_id, title, body, trigger, banner)
+}
+
+/// speak_now を、キャラを指定して使えるようにしたもの (キャラの編集中の試し読み)。
+fn speak_now_as(
+    settings: &AppSettings,
+    character: &Character,
+    app_id: &str,
+    title: &str,
+    body: &str,
+    trigger: telemetry::Trigger,
+    banner: Option<&str>,
+) -> Option<String> {
     // 停止後に変換が終わっても古い音声を鳴らさないよう、変換の前に取る
     let request = if settings.speech_enabled() { speech::system::request() } else { None };
     let raw = if title.is_empty() {
@@ -1245,7 +1409,7 @@ pub(crate) fn speak_now(
         return None;
     }
     let label = app_label(settings, app_id);
-    let text = transform::transform_text(settings, &raw, label.as_deref());
+    let text = transform::transform_text_as(settings, character, &raw, label.as_deref());
     // 小窓へ先に記録する (再生側の「話し始めた」より必ず先に行があるように)。
     let source = companion::Source {
         app_id,
@@ -1257,7 +1421,7 @@ pub(crate) fn speak_now(
     let Some(request) = request else {
         return None;
     };
-    let queued = speech::system::speak(&text, &settings.voice_for(app_id), request, telemetry::Context::new(app_id, trigger), line);
+    let queued = speech::system::speak(&text, &character.voice, request, telemetry::Context::new(app_id, trigger), line);
     if !queued {
         // 受け付けた直後に止められた: 吹き出しは残し、読み上げなしにする
         companion::mark(line, companion::LineState::Silent);
@@ -1412,6 +1576,7 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
 
 /// 「試しに喋る」: 実通知なしで変換→発声まで通す (M1)。
 /// アプリ別ON/OFFは無視するが、全体OFF・消音には従う。
+/// character_id を渡すと、そのキャラで話す (編集中のキャラの試し読み)。無ければそのアプリを読むキャラ。
 /// 変換に数秒かかるのでasync指定でメインスレッド (画面) を塞がない。
 #[tauri::command(async)]
 fn test_speak(
@@ -1419,8 +1584,10 @@ fn test_speak(
     app_id: String,
     title: String,
     body: String,
+    character_id: Option<String>,
 ) -> Result<String, String> {
-    Ok(speak_now(&state, &app_id, &title, &body, telemetry::Trigger::Preview, None).unwrap_or_default())
+    let character = character_id.and_then(|id| state.character(&id)).unwrap_or_else(|| state.character_for(&app_id));
+    Ok(speak_now_as(&state, &character, &app_id, &title, &body, telemetry::Trigger::Preview, None).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -1501,23 +1668,24 @@ pub fn run() {
             set_app_enabled,
             set_speak_all,
             set_speech_enabled,
-            set_mode,
             get_personas,
-            set_persona,
-            set_voice,
+            set_active_character,
+            create_character,
+            update_character,
+            delete_character,
             cloud_tts_configured,
             get_speech_issue,
             gemini_byok_status,
             save_gemini_key,
             delete_gemini_key,
-            set_app_voice,
+            set_app_character,
             set_volume,
             set_onboarded,
             windows_ensure_access,
             test_speak,
             companion::companion_feed,
-            companion::companion_image,
-            companion::set_companion_image,
+            companion::character_image,
+            companion::set_character_image,
             companion::show_companion,
             companion::show_settings,
             companion::companion_open,
@@ -1545,6 +1713,8 @@ pub fn run() {
                     settings.load(&dir.join("settings.json"));
                     telemetry::init(&dir);
                 }
+                // 旧版で小窓に取り込んでいた背景は、いまのキャラの画像にする
+                companion::migrate_legacy_background(&handle, &settings);
             }
             // トレイを先に作り、窓を隠しても設定・終了の入口を失わないようにする。
             #[cfg(target_os = "macos")]
@@ -1711,16 +1881,22 @@ mod tests {
     }
 
     #[test]
-    fn app_voice_overrides_global_voice() {
+    fn app_character_reads_its_app_and_others_use_the_active_one() {
         let settings = AppSettings::default();
-        *settings.voice.lock().unwrap() = "system:Kyoko".to_string();
+        settings.characters.lock().unwrap()[0].voice = "system:Kyoko".to_string();
+        settings.characters.lock().unwrap()[2].voice = "system:Otoya".to_string();
         settings
-            .app_voices
+            .app_characters
             .lock()
             .unwrap()
-            .insert("slack".to_string(), "system:Otoya".to_string());
+            .insert("slack".to_string(), "ren".to_string());
+        assert_eq!(settings.character_for("slack").id, "ren");
         assert_eq!(settings.voice_for("slack"), "system:Otoya");
+        assert_eq!(settings.character_for("discord").id, "mio");
         assert_eq!(settings.voice_for("discord"), "system:Kyoko");
+        // 担当キャラが消えていたら、いま話すキャラが読む
+        settings.characters.lock().unwrap().retain(|c| c.id != "ren");
+        assert_eq!(settings.character_for("slack").id, "mio");
     }
 
     #[test]
@@ -1798,19 +1974,26 @@ mod tests {
     }
 
     #[test]
-    fn app_voices_round_trip_through_json() {
+    fn app_characters_round_trip_and_old_app_voices_are_moved() {
         let settings = AppSettings::default();
         settings
-            .app_voices
+            .app_characters
             .lock()
             .unwrap()
-            .insert("slack".to_string(), "system:Otoya".to_string());
+            .insert("slack".to_string(), "aoi".to_string());
         let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        assert!(!json.contains("app_voices"));
         let back: SavedSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.app_voices.get("slack").map(String::as_str), Some("system:Otoya"));
-        // 旧形式 (app_voicesなし) も読める
-        let old: SavedSettings = serde_json::from_str(r#"{"voice":"system"}"#).unwrap();
-        assert!(old.app_voices.is_empty());
+        assert_eq!(back.app_characters.get("slack").map(String::as_str), Some("aoi"));
+        // 旧形式の「アプリごとの声」は、その声のキャラを担当にする
+        let old = AppSettings::default();
+        let path = std::env::temp_dir().join(format!("readapp-app-voices-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"persona":"mio","voice":"system","app_voices":{"slack":"system:Otoya"},"onboarded":true}"#).unwrap();
+        old.load(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(old.voice_for("slack"), "system:Otoya");
+        assert_eq!(old.character_for("slack").name, "Slack用");
+        assert_eq!(old.voice_for("discord"), "system");
     }
 
     #[test]
@@ -1874,11 +2057,47 @@ mod tests {
     #[test]
     fn raw_mode_skips_persona_transform() {
         let settings = AppSettings::default();
-        *settings.mode.lock().unwrap() = "raw".to_string();
+        settings.characters.lock().unwrap()[0].style = characters::STYLE_RAW.to_string();
         assert_eq!(
             transform::transform_text(&settings, "作業が完了しました。", None),
             "作業が完了しました。"
         );
+    }
+
+    #[test]
+    fn characters_round_trip_and_active_falls_back_to_first() {
+        let settings = AppSettings::default();
+        let mut list = settings.characters();
+        list[1].voice = "system:Otoya".to_string();
+        *settings.characters.lock().unwrap() = list;
+        *settings.active_character.lock().unwrap() = list_id(&settings, 1);
+        let json = serde_json::to_string(&settings.snapshot()).unwrap();
+        let back: SavedSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.active_character, "aoi");
+        assert_eq!(back.characters[1].voice, "system:Otoya");
+        // 古い版へ戻しても、いまのキャラの声と口調が残る
+        assert_eq!(back.voice, "system:Otoya");
+        assert_eq!(back.persona, "aoi");
+        // 消えたキャラを指していたら先頭のキャラで話す
+        *settings.active_character.lock().unwrap() = "gone".to_string();
+        assert_eq!(settings.active().id, "mio");
+    }
+
+    fn list_id(settings: &AppSettings, i: usize) -> String {
+        settings.characters()[i].id.clone()
+    }
+
+    #[test]
+    fn legacy_settings_become_the_chosen_character() {
+        let settings = AppSettings::default();
+        let path = std::env::temp_dir().join(format!("readapp-legacy-characters-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"persona":"ren","voice":"system:Kyoko","mode":"raw","onboarded":true}"#).unwrap();
+        settings.load(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(settings.active().id, "ren");
+        assert_eq!(settings.voice(), "system:Kyoko");
+        assert_eq!(settings.mode(), Mode::Raw);
+        assert!(*settings.migrated_from_legacy.lock().unwrap());
     }
 
     #[test]
