@@ -9,6 +9,26 @@ const URL: &str = "https://readapp-tts.hibachi-pj.workers.dev/v1/tts";
 const SERVICE: &str = "com.hibachi.readapp.cloud-tts";
 const ACCOUNT: &str = "device-token";
 pub(super) const VOICES: [&str; 4] = ["Kore", "Aoede", "Puck", "Charon"];
+/// 声の出し方を書いていない時の読み方
+const DEFAULT_STYLE: &str = "Natural, calm Japanese notification voice.";
+/// どの声の出し方でも最後に付ける。声の出し方の指示で文章を言い換えさせない
+const EXACT: &str = "Read the text exactly as written.";
+
+/// Geminiの声への読み方の指示。キャラの声の出し方 (空なら既定) に、文章を変えずに読む指示を足す
+pub(super) fn speech_style(voice_prompt: &str) -> String {
+    let prompt = voice_prompt.trim();
+    format!("{} {EXACT}", if prompt.is_empty() { DEFAULT_STYLE } else { prompt })
+}
+
+/// Workerへ送る本文。声の出し方はある時だけ送る (Worker側でも文章を変えずに読む指示を足す)
+fn request_body(text: &str, voice: &str, voice_prompt: &str) -> String {
+    let prompt = voice_prompt.trim();
+    if prompt.is_empty() {
+        serde_json::json!({"text": text, "voice": voice}).to_string()
+    } else {
+        serde_json::json!({"text": text, "voice": voice, "style": prompt}).to_string()
+    }
+}
 
 fn valid_token(token: &str) -> bool {
     token.len() == 64
@@ -90,6 +110,7 @@ pub(super) fn valid_wav(bytes: &[u8]) -> bool {
 pub(super) fn speak(
     text: &str,
     voice: &str,
+    voice_prompt: &str,
     playback: &Playback,
     request: Request,
 ) -> Result<(), &'static str> {
@@ -122,7 +143,7 @@ pub(super) fn speak(
                 .open(&file)
                 .map_err(|_| "音声の保存に失敗しました")?;
         }
-        let body = serde_json::json!({"text": text, "voice": voice}).to_string();
+        let body = request_body(text, voice, voice_prompt);
         let config = format!("url=\"{URL}\"\nheader=\"Authorization: Bearer {token}\"\nheader=\"Content-Type: application/json\"\ndata=\"{}\"\noutput=\"{}\"\n", curl_quote(&body), curl_quote(&file.to_string_lossy()));
         let success = playback.run_with_input(
             Command::new("curl")
@@ -198,6 +219,16 @@ mod tests {
     #[test]
     fn config_cannot_inject_headers_or_options() {
         assert_eq!(curl_quote("a\n\"\\b\r"), "a\\n\\\"\\\\b\\r");
+    }
+    #[test]
+    fn voice_prompt_is_sent_only_when_written_and_never_drops_the_exact_reading() {
+        assert_eq!(speech_style("  "), "Natural, calm Japanese notification voice. Read the text exactly as written.");
+        assert_eq!(speech_style(" 元気に "), "元気に Read the text exactly as written.");
+        let plain: serde_json::Value = serde_json::from_str(&request_body("本文", "Kore", "")).unwrap();
+        assert!(plain.get("style").is_none());
+        let styled: serde_json::Value = serde_json::from_str(&request_body("本文", "Kore", " 元気に ")).unwrap();
+        assert_eq!(styled["style"], "元気に");
+        assert_eq!(styled["text"], "本文");
     }
     #[test]
     fn only_wav_can_be_played() {

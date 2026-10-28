@@ -52,6 +52,45 @@ public func readapp_app_installed(_ bundleId: UnsafePointer<CChar>) -> Bool {
     NSWorkspace.shared.urlForApplication(withBundleIdentifier: String(cString: bundleId)) != nil
 }
 
+/// アプリのアイコンを、指定した大きさ (px) のPNGで out に書く。書けたら (または足りなければ) PNGの長さを返し、
+/// アプリが見つからなければ 0。バンドルIDを優先し、無ければ名前で /Applications などを探す (サンドボックス内でも使える)。
+@_cdecl("readapp_app_icon_png")
+public func readapp_app_icon_png(
+    _ bundleId: UnsafePointer<CChar>,
+    _ name: UnsafePointer<CChar>,
+    _ px: Int32,
+    _ out: UnsafeMutablePointer<UInt8>,
+    _ cap: Int
+) -> Int {
+    let id = String(cString: bundleId)
+    let appName = String(cString: name)
+    var url: URL? = id.isEmpty ? nil : NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+    if url == nil, !appName.isEmpty, !appName.contains("/") {
+        let dirs = ["/Applications", "/System/Applications", "/System/Applications/Utilities", "/Applications/Utilities", NSHomeDirectory() + "/Applications"]
+        url = dirs
+            .map { URL(fileURLWithPath: $0).appendingPathComponent(appName + ".app") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+    guard let url, px > 0 else { return 0 }
+    let icon = NSWorkspace.shared.icon(forFile: url.path)
+    let side = Int(px)
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ) else { return 0 }
+    let size = NSSize(width: side, height: side)
+    rep.size = size
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    icon.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .copy, fraction: 1)
+    NSGraphicsContext.restoreGraphicsState()
+    guard let png = rep.representation(using: .png, properties: [:]) else { return 0 }
+    if png.count <= cap {
+        png.copyBytes(to: out, count: png.count)
+    }
+    return png.count
+}
+
 // ---- ログイン時に起動 (macOSの「ログイン項目」。サンドボックスのMAS版でも使える) ----
 // 状態: 0 = 未登録, 1 = 有効, 2 = システム設定で許可待ち, 3 = アプリが見つからない
 

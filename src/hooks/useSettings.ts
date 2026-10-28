@@ -39,6 +39,8 @@ export function useSettings() {
   const [platform, setPlatform] = useState("macos");
   const [edition, setEdition] = useState("direct");
   const [personas, setPersonas] = useState<Persona[]>([]);
+  /** キャラのひな形 (キャラを作る画面・オンボーディングで選ぶ) */
+  const [presets, setPresets] = useState<Character[]>([]);
   const [cloudTtsConfigured, setCloudTtsConfigured] = useState(false);
   const [geminiByok, setGeminiByok] = useState<GeminiByokStatus | null>(null);
   const [geminiByokError, setGeminiByokError] = useState<string | null>(null);
@@ -89,6 +91,7 @@ export function useSettings() {
     invoke<string>("get_platform").then(setPlatform).catch(() => {});
     invoke<string>("get_edition").then(setEdition).catch(() => {});
     invoke<Persona[]>("get_personas").then(setPersonas).catch(() => {});
+    invoke<Character[]>("get_character_presets").then(setPresets).catch(() => {});
     invoke<boolean>("cloud_tts_configured").then(setCloudTtsConfigured).catch(() => {});
     void refreshGeminiByok();
     return () => { disposed = true; unlisten?.(); };
@@ -140,9 +143,9 @@ export function useSettings() {
     await invoke("set_active_character", { id });
   }, []);
 
-  /** 新しいキャラを作る (まだ選ばない) */
-  const createCharacter = useCallback(async (): Promise<Character> => {
-    const created = await invoke<Character>("create_character");
+  /** 新しいキャラを作る (まだ選ばない)。preset を渡すとそのひな形から、無ければ一から */
+  const createCharacter = useCallback(async (preset?: string): Promise<Character> => {
+    const created = await invoke<Character>("create_character", { preset: preset ?? null });
     setState((s) => (s && !s.characters.some((c) => c.id === created.id)
       ? withCharacters(s, { characters: [...s.characters, created], active_character: s.active_character })
       : s));
@@ -165,6 +168,13 @@ export function useSettings() {
       if (restore) setState((s) => (s ? withCharacters(s, { characters: restore, active_character: s.active_character }) : s));
       throw e;
     }
+  }, []);
+
+  /** オンボーディングで、最初のキャラをひな形から選ぶ */
+  const startWithPreset = useCallback(async (preset: string) => {
+    await invoke("start_with_preset", { preset });
+    const next = await invoke<FullState>("get_state");
+    setState((s) => (s ? withCharacters(s, next) : s));
   }, []);
 
   const deleteCharacter = useCallback(async (id: string) => {
@@ -220,6 +230,7 @@ export function useSettings() {
     platform,
     edition,
     personas,
+    presets,
     cloudTtsConfigured,
     geminiByok,
     geminiByokError,
@@ -232,6 +243,7 @@ export function useSettings() {
     setSpeechEnabled,
     setActiveCharacter,
     createCharacter,
+    startWithPreset,
     updateCharacter,
     deleteCharacter,
     setCharacterImage,

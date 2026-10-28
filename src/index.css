@@ -158,6 +158,30 @@
 
 /* テーマカラー (設定の「見た目」)。ラベンダーはテーマの既定色なので指定しない。
    daisyUIのテーマ変数より確実に優先されるよう、レイヤー外に置く。 */
+
+/* 動くキャラ「ふきだし」(components/live-character.tsx) の体と通知の点の色。テーマカラーに合わせるが、
+   ダークでも同じ色にする (ダークの primary は明るく、そのまま使うと背景に溶けるため)。
+   体のグラデーションと背景は、この色を白や黒と混ぜて作る。 */
+:root {
+  --fuki-body: #6b4ce6;
+  --fuki-dot: #f6a019;
+}
+:root[data-accent="sakura"] {
+  --fuki-body: #d9577f;
+}
+:root[data-accent="sora"] {
+  --fuki-body: #3a7fd8;
+}
+:root[data-accent="mint"] {
+  --fuki-body: #26a074;
+}
+:root[data-accent="mikan"] {
+  --fuki-body: #e2702a;
+  --fuki-dot: #ffc83a;
+}
+:root[data-accent="sumi"] {
+  --fuki-body: #5a5562;
+}
 :root[data-accent="sakura"] {
   --color-primary: #c24a72;
   --color-primary-content: #fff8fa;

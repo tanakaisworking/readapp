@@ -139,7 +139,7 @@ export function MasAppList({ onOpenApp, characterNameOf }: Props) {
           aria-label={`${app.name}の設定を開く`}
           className="list-col-grow -my-1 flex min-w-0 items-center gap-3 rounded-field py-1 text-left"
         >
-          <AppAvatar name={app.name} color={knownApp(app.id).color} />
+          <AppAvatar id={app.id} name={app.name} color={knownApp(app.id).color} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{app.name}</span>
             <span className="flex items-center gap-1 truncate text-xs text-muted">

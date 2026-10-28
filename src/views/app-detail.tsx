@@ -119,7 +119,7 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
       ? { label: "登録済み", tone: "badge-primary" }
       : { label: "未登録", tone: "badge-ghost" };
   const characterChoices: { id: string | null; name: string; note: string; character: Character | undefined }[] = [
-    { id: null, name: "いま話すキャラに任せる", note: activeCharacter ? "今は" + activeCharacter.name + "が読みます" : "", character: activeCharacter },
+    { id: null, name: "全体のキャラに任せる", note: activeCharacter ? "今は" + activeCharacter.name + "が読みます" : "", character: activeCharacter },
     ...state.characters.map((c) => ({ id: c.id as string | null, name: c.name, note: voiceName(c.voice, systemVoices) + " · " + styleLabel(c.style, personas), character: c })),
   ];
 
@@ -134,7 +134,7 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
 
       <section aria-label="読み上げ" className="surface p-4">
         <div className="flex items-center gap-3">
-          <AppAvatar name={appName} color={app.color} large />
+          <AppAvatar id={appId} name={appName} color={app.color} large />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium">読み上げる</p>
             <p className="mt-0.5 text-xs text-muted">{on ? "通知が来たら声でお知らせ" : "今は読み上げません"}</p>

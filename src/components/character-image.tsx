@@ -1,5 +1,6 @@
 import { motion, useReducedMotion } from "motion/react";
-import { characterSrc, type Character } from "@/lib/characters";
+import { characterSrc, isLiveImage, type Character } from "@/lib/characters";
+import { LiveCharacter } from "@/components/live-character";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -15,6 +16,14 @@ export function CharacterImage({ character, customs, className, speaking = false
   const reduce = useReducedMotion();
   const src = characterSrc(character, customs);
   const breathe = speaking && !reduce;
+  // 動くキャラは、話している間だけ動かす (一覧ではよく目に入るので止めておく)
+  if (isLiveImage(character?.image)) {
+    return (
+      <span className={cn("block shrink-0 overflow-hidden bg-base-300", className)}>
+        <LiveCharacter framing="portrait" speaking={speaking} still={!speaking} className="block size-full" />
+      </span>
+    );
+  }
   return (
     <motion.span
       className={cn("block shrink-0 overflow-hidden bg-base-300", className)}

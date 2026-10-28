@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronLeft, ImagePlus, Play, Trash2 } from "lucide-react";
 import { CharacterImage } from "@/components/character-image";
+import { LiveCharacter } from "@/components/live-character";
 import { GeminiKeySettings } from "@/components/gemini-key-settings";
 import { PremiumSheet } from "@/components/premium-sheet";
 import { SpeechIssueNotice } from "@/components/speech-issue-notice";
@@ -15,6 +16,8 @@ import {
   PRESET_IMAGES,
   STYLE_CUSTOM,
   STYLE_RAW,
+  VOICE_PROMPT_MAX,
+  usesVoicePrompt,
   styleSample,
   type Character,
 } from "@/lib/characters";
@@ -39,6 +42,7 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
   const character = state.characters.find((c) => c.id === characterId);
   const [name, setName] = useState(character?.name ?? "");
   const [note, setNote] = useState(character?.style_note ?? "");
+  const [voicePrompt, setVoicePrompt] = useState(character?.voice_prompt ?? "");
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [premiumVoice, setPremiumVoice] = useState<string | null>(null);
@@ -80,6 +84,12 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
   const saveNote = () => {
     if (note.trim() !== character.style_note) void save({ style_note: note.trim() });
   };
+
+  const saveVoicePrompt = (preview = false) => {
+    const next = voicePrompt.trim();
+    if (next !== character.voice_prompt || preview) void save({ voice_prompt: next }, preview);
+  };
+  const promptInUse = usesVoicePrompt(character.voice);
 
   const pickFile = async () => {
     const picked = await open({ multiple: false, directory: false, filters: [{ name: "画像", extensions: IMAGE_EXTENSIONS }] }).catch(() => null);
@@ -148,11 +158,11 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
             {active ? (
               <span className="badge badge-soft badge-primary self-start">
                 <Check className="size-3" aria-hidden="true" />
-                いま話しているキャラ
+                全体のキャラ
               </span>
             ) : (
               <button type="button" className="btn btn-sm" onClick={() => void api.setActiveCharacter(character.id)}>
-                このキャラで話す
+                全体のキャラにする
               </button>
             )}
           </div>
@@ -165,7 +175,7 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
         <p className="mt-1 px-1 text-xs leading-relaxed text-muted">小窓の背景になります。</p>
         <ul className="surface mt-2 grid grid-cols-4 gap-2 p-3">
           {PRESET_IMAGES.map((p) => (
-            <ImageTile key={p.id} name={p.name} src={p.src} selected={character.image === p.image} onSelect={() => void save({ image: p.image })} />
+            <ImageTile key={p.id} name={p.name} src={p.src} live={p.live} selected={character.image === p.image} onSelect={() => void save({ image: p.image })} />
           ))}
           {hasCustom && (
             <ImageTile name="自分の画像" src={customs[character.id] ?? ""} selected={character.image === "custom"} onSelect={() => {}} />
@@ -247,6 +257,30 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
               />
             ))}
           </ul>
+          <div className="border-t border-base-content/10 px-2.5 pb-1 pt-3">
+            <label htmlFor="character-voice-prompt" className="block text-[13px] font-medium">声の出し方</label>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted">Geminiの声で読む時に、声の高さ・速さ・気持ちをこのように演じます。読む内容は変わりません。</p>
+            <textarea
+              id="character-voice-prompt"
+              value={voicePrompt}
+              maxLength={VOICE_PROMPT_MAX}
+              rows={3}
+              placeholder="例: 明るく弾むような元気な声。テンポよく、語尾を軽く上げて話す。"
+              onChange={(e) => setVoicePrompt(e.target.value)}
+              onBlur={() => saveVoicePrompt()}
+              className="textarea textarea-sm mt-2 w-full text-[13px] leading-relaxed"
+            />
+            <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-muted">
+              <span>{promptInUse ? "空にすると、落ち着いた読み方になります。" : "いまの声はシステム音声なので使いません。Geminiの声を選ぶと使います。"}</span>
+              <span className="shrink-0 tabular-nums">{voicePrompt.length}/{VOICE_PROMPT_MAX}</span>
+            </div>
+            {promptInUse && (
+              <button type="button" className="btn btn-xs mt-1.5" onClick={() => saveVoicePrompt(true)} disabled={speaking}>
+                <Play aria-hidden="true" />
+                この声で試す
+              </button>
+            )}
+          </div>
           <div className="space-y-2 px-2.5 pb-2.5">
             {api.cloudTtsConfigured && <p className="text-xs leading-relaxed text-muted">「試用接続」の声はreadappのWorker経由でGoogleへ文章を送ります。</p>}
             {character.voice.startsWith("gemini:") && api.geminiByok && !api.geminiByok.configured && (
@@ -278,7 +312,7 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
   );
 }
 
-function ImageTile({ name, src, selected, onSelect }: { name: string; src: string; selected: boolean; onSelect: () => void }) {
+function ImageTile({ name, src, live = false, selected, onSelect }: { name: string; src: string; live?: boolean; selected: boolean; onSelect: () => void }) {
   return (
     <li>
       <button type="button" aria-pressed={selected} aria-label={name} onClick={onSelect} className="group/tile block w-full text-left">
@@ -288,7 +322,11 @@ function ImageTile({ name, src, selected, onSelect }: { name: string; src: strin
             selected ? "ring-2 ring-primary" : "group-hover/tile:ring-2 group-hover/tile:ring-base-content/20",
           )}
         >
-          <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" />
+          {live ? (
+            <LiveCharacter framing="portrait" still className="block size-full transition-transform duration-200 group-hover/tile:scale-105" />
+          ) : (
+            <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" />
+          )}
           {selected && (
             <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-primary text-primary-content" aria-hidden="true">
               <Check className="size-2.5" strokeWidth={3} />

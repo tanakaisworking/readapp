@@ -6,12 +6,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ArrowDown, Check, Pencil, Pin, Settings2, UsersRound, VolumeX, X } from "lucide-react";
 import { knownApp } from "@/lib/apps";
+import { useAppIcon } from "@/components/app-avatar";
+import { LiveCharacter } from "@/components/live-character";
 import { OPEN_PICKER_EVENT, OPEN_PICKER_KEY, openCharacterEditor } from "@/lib/companion-window";
 import {
   IMAGE_EXTENSIONS,
   characterSrc,
+  isLiveImage,
   migrateLegacyBackground,
   useCustomImages,
+  type Character,
   type CharactersState,
 } from "@/lib/characters";
 import { cn } from "@/lib/utils";
@@ -45,6 +49,15 @@ function lineLabel(line: Line): string {
 function lineColor(line: Line): string {
   if (line.app_id === "preview" || line.app_id === "readapp") return "var(--color-primary)";
   return knownApp(line.app_id).color;
+}
+
+/** 吹き出しのアプリ名の横の印。入っているアプリは本物のアイコン、readapp自身はロゴ、ほかは色の点 */
+function SourceMark({ line }: { line: Line }) {
+  const own = line.app_id === "preview" || line.app_id === "readapp";
+  const icon = useAppIcon(own ? undefined : line.app_id);
+  const src = own ? "/logo.png" : icon;
+  if (src) return <img src={src} alt="" aria-hidden="true" draggable={false} className="size-4 shrink-0 select-none object-contain" />;
+  return <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: lineColor(line) }} aria-hidden="true" />;
 }
 
 function clock(ms: number): string {
@@ -100,7 +113,7 @@ function Bubble({ line, onOpen }: { line: Line; onOpen?: (line: Line) => void })
   const content = (
     <>
       <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
-        <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: lineColor(line) }} aria-hidden="true" />
+        <SourceMark line={line} />
         <span className="truncate">{lineLabel(line)}</span>
         {speaking && <Bars />}
         {line.state === "silent" && <VolumeX className="size-3 shrink-0" aria-label="読み上げなし" />}
@@ -290,6 +303,9 @@ export function Companion() {
   // 作ったキャラと、いま話すキャラ (背景はそのキャラの画像)
   const [cast, setCast] = useState<CharactersState | null>(null);
   const customs = useCustomImages(cast?.characters);
+  // 新しく届いた通知の数 (動くキャラが「届いた」動きをする)。起動時に読み込んだ過去の通知では動かさない
+  const [arrivals, setArrivals] = useState(0);
+  const newestId = useRef(0);
   const [picking, setPicking] = useState(false);
   const [dragging, setDragging] = useState(false);
   // 小窓を使っている間だけ吹き出しを上まで広げ、過去の通知をさかのぼれるようにする
@@ -323,6 +339,10 @@ export function Companion() {
     const offs: (() => void)[] = [];
     const keep = (off: () => void) => (disposed ? off() : offs.push(off));
     listen<Line>("companion-line", ({ payload }) => {
+      if (payload.id > newestId.current) {
+        newestId.current = payload.id;
+        setArrivals((n) => n + 1);
+      }
       setLines((cur) => {
         const i = cur.findIndex((l) => l.id === payload.id);
         if (i < 0) return [...cur, payload].slice(-FEED_LIMIT);
@@ -339,7 +359,13 @@ export function Companion() {
     };
     listen(OPEN_PICKER_EVENT, openPicker).then(keep).catch(() => {});
     try { if (localStorage.getItem(OPEN_PICKER_KEY) === "1") openPicker(); } catch { /* 読めなければ開かない */ }
-    invoke<Line[]>("companion_feed").then((feed) => !disposed && setLines((cur) => (cur.length ? cur : feed))).catch(() => {});
+    invoke<Line[]>("companion_feed")
+      .then((feed) => {
+        if (disposed) return;
+        newestId.current = Math.max(newestId.current, ...feed.map((l) => l.id));
+        setLines((cur) => (cur.length ? cur : feed));
+      })
+      .catch(() => {});
     let changed = false;
     listen<CharactersState>("characters-changed", ({ payload }) => {
       changed = true;
@@ -459,7 +485,9 @@ export function Companion() {
     void getCurrentWindow().startDragging().catch(() => {});
   };
 
-  const background = cast ? characterSrc(active, customs) : null;
+  const live = cast ? isLiveImage(active?.image) : false;
+  const background = cast && !live ? characterSrc(active, customs) : null;
+  const speaking = lines.some((l) => l.state === "speaking");
   const choose = (id: string) => {
     setCast((cur) => (cur ? { ...cur, active_character: id } : cur));
     void invoke("set_active_character", { id }).catch(() => setNotice("キャラを切り替えられませんでした"));
@@ -475,6 +503,18 @@ export function Companion() {
         onPointerCancel={() => (dragFrom.current = null)}
       >
         <AnimatePresence initial={false}>
+          {live && (
+            <motion.div
+              key="live"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+              className="absolute inset-0"
+            >
+              <LiveCharacter framing="scene" speaking={speaking} notifyKey={arrivals} className="block size-full" />
+            </motion.div>
+          )}
           {background && (
             <motion.img
               key={background.length + background.slice(-24)}
@@ -612,7 +652,7 @@ export function Companion() {
                 {!adjusting && (<>
                 <ul className="mt-3 grid grid-cols-4 gap-2">
                   {cast?.characters.map((c) => (
-                    <BackgroundTile key={c.id} name={c.name} src={characterSrc(c, customs)} selected={c.id === active?.id} onSelect={() => choose(c.id)} />
+                    <BackgroundTile key={c.id} character={c} name={c.name} src={characterSrc(c, customs)} selected={c.id === active?.id} onSelect={() => choose(c.id)} />
                   ))}
                 </ul>
                 {active && (
@@ -649,7 +689,7 @@ export function Companion() {
   );
 }
 
-function BackgroundTile({ name, src, selected, onSelect }: { name: string; src: string | null; selected: boolean; onSelect: () => void }) {
+function BackgroundTile({ character, name, src, selected, onSelect }: { character: Character; name: string; src: string | null; selected: boolean; onSelect: () => void }) {
   return (
     <li>
       <button type="button" aria-pressed={selected} onClick={onSelect} className="group/tile block w-full text-left">
@@ -659,7 +699,13 @@ function BackgroundTile({ name, src, selected, onSelect }: { name: string; src: 
             selected ? "ring-2 ring-primary" : "group-hover/tile:ring-2 group-hover/tile:ring-base-content/20",
           )}
         >
-          {src ? <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" /> : <span className="block size-full bg-base-300" />}
+          {isLiveImage(character.image) ? (
+            <LiveCharacter framing="portrait" still className="block size-full transition-transform duration-200 group-hover/tile:scale-105" />
+          ) : src ? (
+            <img src={src} alt="" draggable={false} className="size-full object-cover transition-transform duration-200 group-hover/tile:scale-105" />
+          ) : (
+            <span className="block size-full bg-base-300" />
+          )}
           {selected && (
             <span className="absolute right-1 top-1 grid size-4 place-items-center rounded-full bg-primary text-primary-content" aria-hidden="true">
               <Check className="size-2.5" strokeWidth={3} />

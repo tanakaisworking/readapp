@@ -134,18 +134,18 @@ pub(crate) fn request() -> Option<SpeechRequest> {
 #[derive(Clone, Copy)]
 pub(crate) struct SpeechRequest(Request);
 
-/// 読み上げ1件 (文・声・要求・計測・小窓の行)
-type Job = (String, String, SpeechRequest, Context, u64);
+/// 読み上げ1件 (文・声・声の出し方・要求・計測・小窓の行)
+type Job = (String, String, String, SpeechRequest, Context, u64);
 
 fn queue() -> &'static mpsc::Sender<Job> {
     static TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
     TX.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
-            for (text, voice, request, context, line) in rx {
+            for (text, voice, voice_prompt, request, context, line) in rx {
                 if playback().accepts(request.0) {
                     crate::companion::mark(line, crate::companion::LineState::Speaking);
-                    speak_once(&text, &voice, playback().volume(), request, context);
+                    speak_once(&text, &voice, &voice_prompt, playback().volume(), request, context);
                 }
                 crate::companion::mark(line, crate::companion::LineState::Done);
             }
@@ -155,11 +155,12 @@ fn queue() -> &'static mpsc::Sender<Job> {
 }
 
 /// 読み上げ要求をキューへ。停止前の要求・空文字は捨てる。line は小窓の行 (話し始め・終わりを伝える)。
-pub(crate) fn speak(text: &str, voice: &str, request: SpeechRequest, context: Context, line: u64) -> bool {
+/// voice_prompt はキャラの声の出し方 (Geminiの声だけが使う)。
+pub(crate) fn speak(text: &str, voice: &str, voice_prompt: &str, request: SpeechRequest, context: Context, line: u64) -> bool {
     if text.is_empty() || !playback().accepts(request.0) {
         return false;
     }
-    queue().send((text.to_string(), voice.to_string(), request, context, line)).is_ok()
+    queue().send((text.to_string(), voice.to_string(), voice_prompt.to_string(), request, context, line)).is_ok()
 }
 
 /// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。
@@ -183,13 +184,13 @@ fn afplay_volume(volume: u8) -> String {
     format!("{:.2}", f32::from(volume.min(MAX_VOLUME)) / 100.0)
 }
 
-fn speak_once(text: &str, voice: &str, volume: u8, request: SpeechRequest, context: Context) {
+fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: SpeechRequest, context: Context) {
     let event = SpeechEvent::start(context, voice);
     let mut remote_error = None;
     let remote = if super::gemini::is_voice(voice) {
-        Some(super::gemini::speak(text, voice, playback(), request.0))
+        Some(super::gemini::speak(text, voice, voice_prompt, playback(), request.0))
     } else if super::premium::is_voice(voice) {
-        Some(super::premium::speak(text, voice, playback(), request.0))
+        Some(super::premium::speak(text, voice, voice_prompt, playback(), request.0))
     } else { None };
     if let Some(result) = remote {
         match result {

@@ -6,6 +6,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { Home } from "@/views/home";
 import { AppDetail } from "@/views/app-detail";
 import { CharacterEditor } from "@/views/character-editor";
+import { CharacterCreate } from "@/views/character-create";
 import { Onboarding } from "@/views/onboarding";
 import { SpeechIssueNotice } from "@/components/speech-issue-notice";
 import { useCustomImages } from "@/lib/characters";
@@ -13,7 +14,7 @@ import { OPEN_CHARACTER_EVENT, OPEN_CHARACTER_KEY } from "@/lib/companion-window
 import { useSystemVoices } from "@/lib/voices";
 import "./index.css";
 
-type View = { name: "home" } | { name: "app"; appId: string } | { name: "character"; id: string };
+type View = { name: "home" } | { name: "app"; appId: string } | { name: "character"; id: string } | { name: "create" };
 
 const SAMPLE = { title: "テスト", body: "通知読み上げの実験です。作業が完了しました。" };
 
@@ -113,7 +114,7 @@ function App() {
   const useSystemVoice = active && state.voice === api.speechIssue?.voice_id
     ? async () => { await api.updateCharacter({ ...active, voice: "system" }); setDismissedIssue(issueId); }
     : undefined;
-  const viewKey = view.name === "app" ? "app:" + view.appId : view.name === "character" ? "character:" + view.id : "home";
+  const viewKey = view.name === "app" ? "app:" + view.appId : view.name === "character" ? "character:" + view.id : view.name;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -143,6 +144,13 @@ function App() {
               onBack={goHome}
               onPreviewApp={(id) => void preview(id)}
             />
+          ) : view.name === "create" ? (
+            <CharacterCreate
+              api={api}
+              personas={personas}
+              onBack={goHome}
+              onCreated={(id) => setView({ name: "character", id })}
+            />
           ) : view.name === "character" ? (
             <CharacterEditor
               api={api}
@@ -168,6 +176,7 @@ function App() {
               onPreview={previewDefault}
               onOpenApp={(id) => setView({ name: "app", appId: id })}
               onEditCharacter={(id) => setView({ name: "character", id })}
+              onCreateCharacter={() => setView({ name: "create" })}
             />
           )}
         </motion.div>

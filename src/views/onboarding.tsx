@@ -197,9 +197,9 @@ export function Onboarding({ api, state, personas, customs, platform, edition, s
           {step === 2 && (
             <>
               <h1 className="text-[20px] font-semibold leading-snug">キャラを選ぶ</h1>
-              <p className="mt-2 text-[13px] text-muted">選んだキャラが、その声と話し方で通知を知らせます。名前・画像・話し方・声は、あとで変えたり、新しく作ったりできます。</p>
+              <p className="mt-2 text-[13px] text-muted">選んだキャラが、その声と話し方で通知を知らせます。名前・画像・話し方・声は、あとで変えたり、ほかのキャラを作ったりできます。</p>
               <div className="mt-4">
-                <CharacterList characters={state.characters} active={state.active_character} customs={customs} onSelect={(id) => void api.setActiveCharacter(id)} />
+                <CharacterList characters={api.presets} customs={customs} selected={state.characters[0]?.id} pickLabel={(c) => c.name + "にする"} onPick={(id) => void api.startWithPreset(id)} />
               </div>
               {chosen && <p className="mt-3 text-center text-xs text-muted">{chosen.name} · {styleLabel(chosen.style, personas)}</p>}
               <div className="flex-1" />

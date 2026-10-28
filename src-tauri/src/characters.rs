@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 pub const STYLE_RAW: &str = "raw";
 /// 話し方: 自分で書いた口調 (style_note)
 pub const STYLE_CUSTOM: &str = "custom";
-/// 同梱の背景画像 (public/companion/<id>.webp)
-pub const PRESET_IMAGES: [&str; 6] = ["cat", "shiba", "bunny", "buncho", "girl", "boy"];
+/// 同梱の背景画像 (public/companion/<id>.webp)。fuki は画像ではなく、画面側でコードで描いて動かすキャラ
+pub const PRESET_IMAGES: [&str; 7] = ["cat", "shiba", "bunny", "buncho", "girl", "boy", "fuki"];
 /// 取り込んだ画像 (アプリのデータフォルダ companion/characters/<id>.<ext>)
 pub const IMAGE_CUSTOM: &str = "custom";
 pub const NAME_MAX: usize = 20;
 pub const NOTE_MAX: usize = 200;
+pub const VOICE_PROMPT_MAX: usize = 200;
 pub const CHARACTERS_MAX: usize = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,13 +28,45 @@ pub struct Character {
     /// style が "custom" の時の口調 (自分で書く)
     #[serde(default)]
     pub style_note: String,
+    /// Geminiの声で読む時の声の出し方 (声の高さ・速さ・気持ちなど)。システム音声では使わない
+    #[serde(default)]
+    pub voice_prompt: String,
 }
 
 fn preset(id: &str) -> String {
     format!("preset:{id}")
 }
 
-/// 最初から入っているキャラ (id, 名前, 画像, 話し方)。話し方は personas() のid。
+/// 同梱の画像ごとの声の出し方 (ひな形と、声の出し方を持っていなかった以前のキャラに入れる)
+const VOICE_PROMPTS: [(&str, &str); 5] = [
+    ("fuki", "明るく弾むような、少し高めの元気な声。親しい友だちに「来たよ」と教えてあげるように、テンポよく、語尾を軽く上げて話す。"),
+    ("girl", "明るく親しみのある若い女性の声。にこやかに、自然なテンポで話しかける。"),
+    ("cat", "やわらかく上品な声。ゆったりと丁寧に、少し甘えるように話す。"),
+    ("boy", "おっとりした若い男性の声。少しゆっくり、穏やかにやさしく話す。"),
+    ("buncho", "落ち着いたクールな声。抑揚は控えめに、淡々と短く話す。"),
+];
+
+/// 画像 ("preset:<id>") に合う声の出し方。合うものがなければ空 (既定の落ち着いた読み方になる)
+pub fn preset_voice_prompt(image: &str) -> String {
+    image
+        .strip_prefix("preset:")
+        .and_then(|id| VOICE_PROMPTS.iter().find(|(img, _)| *img == id))
+        .map(|(_, prompt)| prompt.to_string())
+        .unwrap_or_default()
+}
+
+/// 声の出し方を持っていなかった以前のキャラに、画像に合う声の出し方を入れる (読み込み時に1度だけ)。変えたら true
+pub fn seed_voice_prompts(list: &mut [Character]) -> bool {
+    let mut changed = false;
+    for c in list.iter_mut().filter(|c| c.voice_prompt.is_empty()) {
+        c.voice_prompt = preset_voice_prompt(&c.image);
+        changed |= !c.voice_prompt.is_empty();
+    }
+    changed
+}
+
+/// キャラのひな形 (id, 名前, 画像, 話し方)。話し方は personas() のid。
+/// キャラを作る時にここから選ぶ。最初の1人 (オンボーディングで選ぶまで) は先頭のひな形。
 /// 名前は性格と見た目が伝わる仮の名前にして、ユーザーが好きな名前に変えられるようにする。
 /// ねこは語尾「にゃん」、文鳥は語尾「ピヨ」で話す。
 const DEFAULTS: [(&str, &str, &str, &str); 4] = [
@@ -57,8 +90,63 @@ pub fn defaults(voice: &str) -> Vec<Character> {
             voice: voice.to_string(),
             style: style.to_string(),
             style_note: String::new(),
+            voice_prompt: preset_voice_prompt(&preset(image)),
         })
         .collect()
+}
+
+/// あとから足したひな形 (最初から入っていたキャラではないので、移行や既定の更新には使わない)。
+/// 動くふきだし (アプリアイコンの子) は、明るい口調で話す。
+const EXTRA_PRESETS: [(&str, &str, &str, &str); 1] = [("fuki", "元気なふきだし", "fuki", "mio")];
+
+/// あとから足したひな形のキャラ
+fn extra_presets(voice: &str) -> Vec<Character> {
+    EXTRA_PRESETS
+        .into_iter()
+        .map(|(id, name, image, style)| Character {
+            id: id.to_string(),
+            name: name.to_string(),
+            image: preset(image),
+            voice: voice.to_string(),
+            style: style.to_string(),
+            style_note: String::new(),
+            voice_prompt: preset_voice_prompt(&preset(image)),
+        })
+        .collect()
+}
+
+/// 初めて使う時の最初のキャラ (オンボーディングで選ぶまで)。アプリアイコンの子の、動くふきだし。
+/// 以前の版から移ってきた時は migrate() の4人から引き継ぐので、これは使わない。
+pub fn first(voice: &str) -> Character {
+    extra_presets(voice).remove(0)
+}
+
+/// キャラのひな形 (声はシステム音声)。いちばん上は最初のキャラと同じ、動くふきだし。
+pub fn presets() -> Vec<Character> {
+    let mut list = extra_presets("system");
+    list.extend(defaults("system"));
+    list
+}
+
+/// ひな形から新しいキャラを作る (IDは新しく振る)。知らないひな形なら None。
+pub fn from_preset(existing: &[Character], preset_id: &str) -> Option<Character> {
+    let preset = presets().into_iter().find(|p| p.id == preset_id)?;
+    Some(Character { id: new_id(existing), ..preset })
+}
+
+/// 以前の版では4人のひな形をそのままキャラとして持っていた。使っていない (全体のキャラでも
+/// アプリの担当でもない) うえに、ひな形から何も変えていないものは一覧から外す (ひな形から作り直せる)。
+/// 変えたら true。キャラは必ず1人以上残す。
+pub fn prune_unused_presets(list: &mut Vec<Character>, active: &str, used: &[String]) -> bool {
+    let presets = presets();
+    let before = list.len();
+    let keep = |c: &Character| c.id == active || used.contains(&c.id) || !presets.contains(c);
+    let kept: Vec<Character> = list.iter().filter(|c| keep(c)).cloned().collect();
+    if kept.is_empty() {
+        return false;
+    }
+    *list = kept;
+    list.len() != before
 }
 
 /// 最初から入っているキャラを、今の既定に合わせる。ユーザーが変えたところはそのまま。変えたら true。
@@ -120,6 +208,10 @@ pub fn clean_note(note: &str) -> String {
     note.trim().chars().take(NOTE_MAX).collect()
 }
 
+pub fn clean_voice_prompt(prompt: &str) -> String {
+    prompt.trim().chars().take(VOICE_PROMPT_MAX).collect()
+}
+
 /// 新しいキャラのID。既存と重ならない短い文字列。
 pub fn new_id(existing: &[Character]) -> String {
     let base = std::time::SystemTime::now()
@@ -146,6 +238,7 @@ pub fn blank(existing: &[Character], voice: &str) -> Character {
         voice: voice.to_string(),
         style: "mio".to_string(),
         style_note: String::new(),
+        voice_prompt: String::new(),
     }
 }
 
@@ -197,6 +290,54 @@ mod tests {
             assert!(valid_image(&c.image), "{}", c.image);
             assert_eq!(clean_name(&c.name).as_deref(), Some(c.name.as_str()));
         }
+    }
+
+    #[test]
+    fn presets_are_valid_and_include_the_moving_bubble() {
+        let list = presets();
+        for c in &list {
+            assert!(valid_style(&c.style), "{}", c.style);
+            assert!(valid_image(&c.image), "{}", c.image);
+            assert_eq!(list.iter().filter(|o| o.id == c.id).count(), 1, "{}", c.id);
+        }
+        let fuki = from_preset(&defaults("system"), "fuki").unwrap();
+        assert_eq!(fuki.image, "preset:fuki");
+        assert_ne!(fuki.id, "fuki");
+    }
+
+    #[test]
+    fn presets_have_voice_prompts_and_old_characters_get_one_by_image() {
+        assert!(presets().iter().all(|c| !c.voice_prompt.is_empty() && c.voice_prompt.chars().count() <= VOICE_PROMPT_MAX));
+        let mut list = defaults("system");
+        list.iter_mut().for_each(|c| c.voice_prompt.clear());
+        list[1].voice_prompt = "自分で書いた声".to_string();
+        list[2].image = IMAGE_CUSTOM.to_string();
+        assert!(seed_voice_prompts(&mut list));
+        assert_eq!(list[0].voice_prompt, preset_voice_prompt("preset:girl"));
+        assert_eq!(list[1].voice_prompt, "自分で書いた声");
+        assert_eq!(list[2].voice_prompt, "");
+        assert_eq!(clean_voice_prompt(&"あ".repeat(300)).chars().count(), VOICE_PROMPT_MAX);
+    }
+
+    #[test]
+    fn unused_untouched_presets_leave_the_list_but_used_or_edited_ones_stay() {
+        let mut list = defaults("system");
+        list[3].name = "ピー助".to_string(); // 名前を変えた文鳥は残す
+        // 全体のキャラ (明るい女子) とアプリ担当 (おっとり男子) も残す
+        assert!(prune_unused_presets(&mut list, "mio", &["ren".to_string()]));
+        let ids: Vec<&str> = list.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["mio", "ren", "shiro"]);
+        assert!(!prune_unused_presets(&mut list, "mio", &["ren".to_string()]));
+    }
+
+    #[test]
+    fn characters_made_from_a_preset_get_a_new_id() {
+        let list = defaults("system");
+        let cat = from_preset(&list, "aoi").unwrap();
+        assert_ne!(cat.id, "aoi");
+        assert_eq!(cat.style, "neko");
+        assert_eq!(cat.image, "preset:cat");
+        assert!(from_preset(&list, "pirate").is_none());
     }
 
     #[test]

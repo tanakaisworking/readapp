@@ -13,6 +13,8 @@ export interface Character {
   /** 話し方: 口調のid (mio など)、"raw" (そのまま読む)、"custom" (自分で書く) */
   style: string;
   style_note: string;
+  /** Geminiの声で読む時の声の出し方 (声の高さ・速さ・気持ちなど)。システム音声では使わない */
+  voice_prompt: string;
 }
 
 export interface CharactersState {
@@ -24,8 +26,15 @@ export const STYLE_RAW = "raw";
 export const STYLE_CUSTOM = "custom";
 export const NAME_MAX = 20;
 export const NOTE_MAX = 200;
+export const VOICE_PROMPT_MAX = 200;
 
-/** 同梱の画像 (public/companion/)。下4割は小窓の吹き出しが重なるので、主役が上半分にいる画像にする */
+/** 声の出し方を使う声か (Geminiの声: 自分のAPIキーと試用接続) */
+export function usesVoicePrompt(voice: string): boolean {
+  return voice.startsWith("gemini:") || voice.startsWith("cloud:");
+}
+
+/** 同梱の画像 (public/companion/)。下4割は小窓の吹き出しが重なるので、主役が上半分にいる画像にする。
+ * live は画像ではなくコードで描いて動かすキャラ (components/live-character.tsx)。src は描けない所での代わりの絵 */
 export const PRESET_IMAGES = [
   { id: "cat", name: "ねこ" },
   { id: "shiba", name: "柴犬" },
@@ -33,7 +42,13 @@ export const PRESET_IMAGES = [
   { id: "buncho", name: "文鳥" },
   { id: "girl", name: "女の子" },
   { id: "boy", name: "男の子" },
-].map((p) => ({ ...p, image: "preset:" + p.id, src: "/companion/" + p.id + ".webp" }));
+].map((p) => ({ ...p, image: "preset:" + p.id, src: "/companion/" + p.id + ".webp", live: false }))
+  .concat([{ id: "fuki", name: "ふきだし (動く)", image: "preset:fuki", src: "/logo.png", live: true }]);
+
+/** コードで描いて動かすキャラか */
+export function isLiveImage(image: string | undefined): boolean {
+  return !!image && PRESET_IMAGES.some((p) => p.live && p.image === image);
+}
 
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif"];
 

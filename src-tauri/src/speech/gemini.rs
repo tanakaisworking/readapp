@@ -1,6 +1,6 @@
 //! BYOKはGoogle直結。Workerや事業者キーへは切り替えない。
 use super::playback::{Playback, Request};
-use super::premium::{curl_quote, valid_wav, MODEL, VOICES};
+use super::premium::{curl_quote, speech_style, valid_wav, MODEL, VOICES};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -18,16 +18,16 @@ pub fn is_voice(id: &str) -> bool {
         .is_some_and(|v| VOICES.contains(&v))
 }
 
-fn payload(text: &str, voice: &str) -> serde_json::Value {
+fn payload(text: &str, voice: &str, voice_prompt: &str) -> serde_json::Value {
     serde_json::json!({"model":MODEL,"store":false,
         "input":[{"type":"user_input","content":[{"type":"text","text":text,
-            "annotations":[{"type":"speech_metadata","style":"Natural, calm Japanese notification voice. Read the text exactly as written."}]}]}],
+            "annotations":[{"type":"speech_metadata","style":speech_style(voice_prompt)}]}]}],
         "response_format":{"type":"audio","mime_type":"audio/wav"},
         "generation_config":{"speech_config":[{"voice":voice}]}})
 }
 
-fn config(key: &str, text: &str, voice: &str, file: &std::path::Path) -> String {
-    format!("url=\"{URL}\"\nheader=\"x-goog-api-key: {key}\"\nheader=\"Content-Type: application/json\"\ndata=\"{}\"\noutput=\"{}\"\n", curl_quote(&payload(text, voice).to_string()), curl_quote(&file.to_string_lossy()))
+fn config(key: &str, text: &str, voice: &str, voice_prompt: &str, file: &std::path::Path) -> String {
+    format!("url=\"{URL}\"\nheader=\"x-goog-api-key: {key}\"\nheader=\"Content-Type: application/json\"\ndata=\"{}\"\noutput=\"{}\"\n", curl_quote(&payload(text, voice, voice_prompt).to_string()), curl_quote(&file.to_string_lossy()))
 }
 
 /// 応答本文は表示・ログへ出さない。ステータスから固定の日本語だけを返す。
@@ -117,6 +117,7 @@ impl Drop for TempFile {
 pub(super) fn speak(
     text: &str,
     id: &str,
+    voice_prompt: &str,
     playback: &Playback,
     request: Request,
 ) -> Result<(), &'static str> {
@@ -133,7 +134,7 @@ pub(super) fn speak(
     let key = super::gemini_key::get()?;
     // 読み取り中の削除・更新にも、run_with_inputの世代検査が効く。
     let file = TempFile::create()?;
-    let config = config(&key, text, voice, &file.0);
+    let config = config(&key, text, voice, voice_prompt, &file.0);
     let success = playback.run_with_input(
         Command::new("curl")
             .args([
@@ -194,15 +195,18 @@ mod tests {
     #[test]
     fn request_uses_direct_google_header_exact_transcript_and_no_storage() {
         let text = "引用\"と改行\nで指示に変わらない文章。";
-        let p = payload(text, "Aoede");
+        let p = payload(text, "Aoede", "明るく元気な声。");
         assert_eq!(p["model"], MODEL);
         assert_eq!(p["store"], false);
         assert_eq!(p["input"][0]["content"][0]["text"], text);
+        // 声の出し方は読み方の指示にだけ入り、読む文章には混ざらない
+        assert_eq!(p["input"][0]["content"][0]["annotations"][0]["style"], "明るく元気な声。 Read the text exactly as written.");
         assert_eq!(p["generation_config"]["speech_config"][0]["voice"], "Aoede");
         let c = config(
             "test-only-not-a-real-api-key-123",
             text,
             "Aoede",
+            "",
             std::path::Path::new("/tmp/test.wav"),
         );
         assert!(c.contains(URL));

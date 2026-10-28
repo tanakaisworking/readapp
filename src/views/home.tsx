@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppWindow, Play, ShieldCheck, Volume2 } from "lucide-react";
-import { HomeAppList } from "@/components/home-app-list";
+import { GlobalCharacterRow, HomeAppList } from "@/components/home-app-list";
 import { AppearanceSettings } from "@/components/appearance-settings";
 import { StartupSettings } from "@/components/startup-settings";
 import { MasAppList } from "@/components/mas-app-list";
@@ -28,15 +28,15 @@ interface Props {
   onPreview: () => void;
   onOpenApp: (id: string) => void;
   onEditCharacter: (id: string) => void;
+  onCreateCharacter: () => void;
 }
 
-export function Home({ api, state, personas, platform, edition, speaking, customs, systemVoices, onPreview, onOpenApp, onEditCharacter }: Props) {
+export function Home({ api, state, personas, platform, edition, speaking, customs, systemVoices, onPreview, onOpenApp, onEditCharacter, onCreateCharacter }: Props) {
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [watching, setWatching] = useState(false);
   const [togglingSpeech, setTogglingSpeech] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [lastAt, setLastAt] = useState<number | null>(null);
-  const [creating, setCreating] = useState(false);
   const mas = edition === "mas";
   const extraIds = Object.keys(state.enabled).filter((id) => id !== "readapp" && !KNOWN_APPS.some((a) => a.id === id));
   const totalOn = [...KNOWN_APPS.map((a) => a.id), ...extraIds].filter((id) => isOn(state, id)).length;
@@ -93,18 +93,6 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
     }
   };
 
-  const create = async () => {
-    setCreating(true);
-    try {
-      const created = await api.createCharacter();
-      onEditCharacter(created.id);
-    } catch {
-      setSpeechError("これ以上キャラを作れません。使わないキャラを削除してください。");
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const reading = state.speech_enabled && state.volume > 0 && (mas || state.speak_all || totalOn > 0);
   const statusText = !state.speech_enabled ? "読み上げ停止中" : state.volume === 0 ? "消音中" : mas
     ? lastAt ? "通知を受信済み" : "ショートカットの設定待ち"
@@ -121,11 +109,11 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
   return (
     <div className="space-y-5 px-4 pb-6 pt-4">
-      <section aria-label="いま話すキャラ" className="surface p-4">
+      <section aria-label="全体のキャラ" className="surface p-4">
         <div className="flex items-start gap-3">
           <CharacterImage character={character} customs={customs} speaking={speaking} className="size-14 rounded-[16px]" />
           <div className="min-w-0 flex-1 pt-0.5">
-            <p className="text-[11px] font-medium text-muted">いま話すキャラ</p>
+            <p className="text-[11px] font-medium text-muted">全体のキャラ</p>
             <h1 className="truncate text-base font-semibold">{character?.name}</h1>
             <p className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-muted">
               <Volume2 className="size-3.5 shrink-0" aria-hidden="true" />
@@ -190,26 +178,31 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
       <section aria-labelledby="home-characters-heading">
         <h2 id="home-characters-heading" className="section-label">キャラ</h2>
-        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">押すと、そのキャラが話します。名前・画像・話し方・声は鉛筆のボタンから変えられます。</p>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">作ったキャラです。押すと、名前・画像・話し方・声を変えられます。</p>
         <div className="surface mt-2 p-3">
           <CharacterList
             characters={state.characters}
-            active={state.active_character}
             customs={customs}
-            onSelect={(id) => void api.setActiveCharacter(id)}
-            onEdit={onEditCharacter}
-            onCreate={() => void create()}
-            creating={creating}
+            onPick={onEditCharacter}
+            pickLabel={(c) => c.name + "を編集"}
+            badge={(c) => (c.id === state.active_character ? "全体" : null)}
+            onCreate={onCreateCharacter}
           />
         </div>
       </section>
 
-      <section aria-labelledby="home-apps-heading">
-        <h2 id="home-apps-heading" className="section-label">読み上げるアプリ</h2>
-        <div className="mt-2">
-          {mas
-            ? <MasAppList onOpenApp={onOpenApp} characterNameOf={characterNameOf} />
-            : <HomeAppList api={api} state={state} onOpenApp={onOpenApp} characterNameOf={characterNameOf} />}
+      <section aria-labelledby="home-readers-heading">
+        <h2 id="home-readers-heading" className="section-label">読み上げ担当</h2>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">読み上げるアプリと、それぞれを読むキャラを決めます。</p>
+        <div className="mt-2 space-y-2">
+          {mas ? (
+            <>
+              <ul className="surface list"><GlobalCharacterRow api={api} state={state} customs={customs} /></ul>
+              <MasAppList onOpenApp={onOpenApp} characterNameOf={characterNameOf} />
+            </>
+          ) : (
+            <HomeAppList api={api} state={state} customs={customs} onOpenApp={onOpenApp} />
+          )}
         </div>
       </section>
 

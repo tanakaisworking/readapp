@@ -4,18 +4,42 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AppAvatar } from "@/components/app-avatar";
+import { CharacterImage } from "@/components/character-image";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import { KNOWN_APPS, knownApp, type FullState } from "@/lib/apps";
 
 interface Props {
   api: SettingsApi;
   state: FullState;
+  customs: Record<string, string | null | undefined>;
   onOpenApp: (id: string) => void;
-  /** そのアプリの担当キャラの名前 (いなければ null) */
-  characterNameOf: (id: string) => string | null;
 }
 
-export function HomeAppList({ api, state, onOpenApp, characterNameOf }: Props) {
+/** 全体のキャラを選ぶ1行 (担当を決めていないアプリを読むキャラ)。MAS版でも同じものを使う */
+export function GlobalCharacterRow({ api, state, customs }: Omit<Props, "onOpenApp">) {
+  const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
+  return (
+    <li className="list-row items-center gap-3 px-3 py-2.5">
+      <CharacterImage character={global} customs={customs} className="size-8 rounded-full" />
+      <div className="list-col-grow min-w-0">
+        <label htmlFor="readapp-global-character" className="block text-sm font-medium">全体のキャラ</label>
+        <p className="truncate text-xs text-muted">担当のないアプリを読む</p>
+      </div>
+      <select
+        id="readapp-global-character"
+        className="select select-sm w-36 shrink-0"
+        value={global?.id ?? ""}
+        onChange={(e) => void api.setActiveCharacter(e.target.value)}
+      >
+        {state.characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+    </li>
+  );
+}
+
+// 読み上げ担当: 全体のキャラ・すべての通知・アプリごとの読み上げと担当キャラを1つにまとめる。
+export function HomeAppList({ api, state, customs, onOpenApp }: Props) {
+  const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
   const [observed, setObserved] = useState<{ id: string; name: string }[]>([]);
   // readapp自身のテスト通知は常に読むので、切り替えの対象にしない。
   const extraIds = Object.keys(state.enabled).filter((id) => id !== "readapp" && !KNOWN_APPS.some((a) => a.id === id));
@@ -48,22 +72,34 @@ export function HomeAppList({ api, state, onOpenApp, characterNameOf }: Props) {
 
   const appRow = (app: (typeof apps)[number]) => {
     const name = state.names[app.id] ?? app.name;
-    const character = characterNameOf(app.id);
+    const assignedId = state.characters.some((c) => c.id === state.app_characters[app.id]) ? state.app_characters[app.id] : "";
+    const reader = state.characters.find((c) => c.id === assignedId) ?? global;
     return (
       <li key={app.id} className="list-row items-center gap-3 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => onOpenApp(app.id)}
-          aria-label={`${name}の設定を開く`}
-          className="list-col-grow group -my-1 flex min-w-0 items-center gap-3 rounded-field py-1 pe-1 text-left"
-        >
-          <AppAvatar name={name} color={app.color} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{name}</span>
-            {character && <span className="block truncate text-xs text-muted">{character}が担当</span>}
+        <AppAvatar id={app.id} name={name} color={app.color} />
+        <div className="list-col-grow min-w-0">
+          <button
+            type="button"
+            onClick={() => onOpenApp(app.id)}
+            aria-label={`${name}の設定を開く`}
+            className="group flex max-w-full items-center gap-1 rounded-field text-left"
+          >
+            <span className="truncate text-sm font-medium">{name}</span>
+            <ChevronRight className="size-3.5 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
+          </button>
+          <span className="mt-0.5 flex min-w-0 items-center gap-1">
+            <CharacterImage character={reader} customs={customs} className="size-4 rounded-full" />
+            <select
+              aria-label={`${name}を読むキャラ`}
+              className="select select-ghost select-xs h-6 min-h-6 w-auto max-w-full ps-1 text-xs text-muted"
+              value={assignedId}
+              onChange={(e) => void api.setAppCharacter(app.id, e.target.value || null)}
+            >
+              <option value="">全体のキャラ（{global?.name}）</option>
+              {state.characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </span>
-          <ChevronRight className="size-4 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
-        </button>
+        </div>
         {!state.speak_all && (
           <input
             type="checkbox"
@@ -81,12 +117,13 @@ export function HomeAppList({ api, state, onOpenApp, characterNameOf }: Props) {
   return (
     <div className="surface">
       <ul className="list">
+        <GlobalCharacterRow api={api} state={state} customs={customs} />
         <li className="list-row items-center gap-3 px-3 py-2.5">
           <span className="grid size-8 place-items-center rounded-full bg-primary/12 text-primary" aria-hidden="true">
             <BellRing className="size-4" />
           </span>
           <div className="list-col-grow min-w-0">
-            <p className="text-sm font-medium">すべての通知</p>
+            <p className="text-sm font-medium">すべての通知を読み上げる</p>
             <p className="truncate text-xs text-muted">{state.speak_all ? "どのアプリの通知も読み上げます" : "オンにすると、下にないアプリも読み上げます"}</p>
           </div>
           <input
@@ -98,16 +135,15 @@ export function HomeAppList({ api, state, onOpenApp, characterNameOf }: Props) {
             aria-label="すべての通知を読み上げる"
           />
         </li>
-        {!state.speak_all && primaryIds.map((id) => apps.find((app) => app.id === id)).filter((app) => app !== undefined).map(appRow)}
+        {primaryIds.map((id) => apps.find((app) => app.id === id)).filter((app) => app !== undefined).map(appRow)}
       </ul>
       <details className="collapse collapse-arrow collapse-compact rounded-none rounded-b-box border-t border-base-200">
         <summary className="collapse-title">
-          {state.speak_all ? "アプリごとのキャラ" : "ほかのアプリ"}
-          <span className="ml-auto text-xs font-normal text-muted">{state.speak_all ? apps.length : remaining.length}件</span>
+          ほかのアプリ
+          <span className="ml-auto text-xs font-normal text-muted">{remaining.length}件</span>
         </summary>
         <div className="collapse-content">
-          {state.speak_all && <p className="pb-1 text-xs leading-relaxed text-muted">アプリを選ぶと、そのアプリを読むキャラを決められます。</p>}
-          <ul className="list -mx-4">{(state.speak_all ? apps : remaining).map(appRow)}</ul>
+          <ul className="list -mx-4">{remaining.map(appRow)}</ul>
           {newcomers.length > 0 && (
             <div className="mt-3">
               <p className="text-xs font-medium text-muted">通知が届いたアプリ</p>

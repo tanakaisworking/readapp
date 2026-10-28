@@ -99,6 +99,12 @@ struct SavedSettings {
     active_character: String,
     #[serde(default)]
     app_characters: HashMap<String, String>,
+    /// 以前の版の「ひな形をそのまま持つキャラ」を一覧から外し済みか (外すのは1度だけ)
+    #[serde(default)]
+    pruned_presets: bool,
+    /// 声の出し方を持っていなかった以前のキャラへ、画像に合う声の出し方を入れ済みか (入れるのは1度だけ)
+    #[serde(default)]
+    voice_prompts_seeded: bool,
     /// 旧形式 (アプリごとの声)。読み込み時に担当キャラへ移し、書き出さない
     #[serde(default, skip_serializing)]
     app_voices: HashMap<String, String>,
@@ -137,8 +143,8 @@ impl Default for AppSettings {
             speak_all: Mutex::new(false),
             speech_enabled: Mutex::new(true),
             names: Mutex::new(HashMap::new()),
-            characters: Mutex::new(characters::defaults(&default_voice_id())),
-            active_character: Mutex::new(default_persona_id()),
+            characters: Mutex::new(vec![characters::first(&default_voice_id())]),
+            active_character: Mutex::new(characters::first(&default_voice_id()).id),
             migrated_from_legacy: Mutex::new(false),
             app_characters: Mutex::new(HashMap::new()),
             volume: Mutex::new(default_volume()),
@@ -199,7 +205,7 @@ impl AppSettings {
             .find(|c| c.id == id)
             .or_else(|| list.first())
             .cloned()
-            .unwrap_or_else(|| characters::defaults(&default_voice_id()).remove(0))
+            .unwrap_or_else(|| characters::first(&default_voice_id()))
     }
 
     pub fn active_id(&self) -> String {
@@ -345,6 +351,8 @@ impl AppSettings {
             characters: self.characters(),
             active_character: active.id,
             app_characters: self.app_characters.lock().map(|m| m.clone()).unwrap_or_default(),
+            pruned_presets: true,
+            voice_prompts_seeded: true,
             app_voices: HashMap::new(),
             volume: self.volume(),
             onboarded: self.onboarded.lock().map(|b| *b).unwrap_or(false),
@@ -396,6 +404,10 @@ impl AppSettings {
                         (list, saved.active_character)
                     };
                     let mut list = list;
+                    // 消して空にした声の出し方を戻さないよう、入れるのは1度だけ
+                    if !saved.voice_prompts_seeded {
+                        characters::seed_voice_prompts(&mut list);
+                    }
                     let mut assigned = saved.app_characters;
                     // 旧版の「アプリごとの声」は、その声のキャラを担当にする
                     if assigned.is_empty() && !saved.app_voices.is_empty() {
@@ -405,6 +417,11 @@ impl AppSettings {
                                 .or_else(|| catalog().iter().find(|a| a.id == id).map(|a| a.name.clone()))
                                 .unwrap_or_else(|| id.to_string())
                         });
+                    }
+                    // 以前の版で持っていた、使っていないひな形のままのキャラは一覧から外す (1度だけ)
+                    if !saved.pruned_presets {
+                        let used: Vec<String> = assigned.values().cloned().collect();
+                        characters::prune_unused_presets(&mut list, &active, &used);
                     }
                     if let Ok(mut c) = self.characters.lock() {
                         *c = list;
@@ -593,21 +610,51 @@ fn set_active_character(state: State<'_, AppSettings>, id: String) -> Result<(),
     if ok || state.active_id() == id { Ok(()) } else { Err("not_found".to_string()) }
 }
 
-/// 新しいキャラを作って返す (まだ選ばない)。
+/// 新しいキャラを作って返す (まだ選ばない)。preset を渡すとそのひな形から、無ければ一から作る。
 #[tauri::command]
-fn create_character(state: State<'_, AppSettings>) -> Result<Character, String> {
+fn create_character(state: State<'_, AppSettings>, preset: Option<String>) -> Result<Character, String> {
     let voice = state.voice();
     let mut created = None;
     state.edit_characters(|list, _| {
         if list.len() >= characters::CHARACTERS_MAX {
             return false;
         }
-        let c = characters::blank(list, &voice);
+        let c = match preset.as_deref() {
+            Some(id) => match characters::from_preset(list, id) {
+                Some(c) => c,
+                None => return false,
+            },
+            None => characters::blank(list, &voice),
+        };
         created = Some(c.clone());
         list.push(c);
         true
     });
-    created.ok_or_else(|| "too_many".to_string())
+    created.ok_or_else(|| if state.characters().len() >= characters::CHARACTERS_MAX { "too_many" } else { "invalid" }.to_string())
+}
+
+/// キャラのひな形 (キャラを作る画面で選ぶ)。
+#[tauri::command]
+fn get_character_presets() -> Vec<Character> {
+    characters::presets()
+}
+
+/// オンボーディングで、最初のキャラをひな形から選ぶ。始める前だけ使え、最初のキャラを置き換える。
+#[tauri::command]
+fn start_with_preset(state: State<'_, AppSettings>, preset: String) -> Result<(), String> {
+    if state.onboarded.lock().map(|b| *b).unwrap_or(true) {
+        return Err("already_started".to_string());
+    }
+    let chosen = characters::presets().into_iter().find(|p| p.id == preset).ok_or("invalid")?;
+    state.edit_characters(|list, active| {
+        if list.len() == 1 && list[0] == chosen {
+            return false;
+        }
+        *active = chosen.id.clone();
+        *list = vec![chosen];
+        true
+    });
+    Ok(())
 }
 
 /// キャラの名前・画像・声・話し方を書き換える。知らない値は受け付けない。
@@ -617,7 +664,12 @@ fn update_character(state: State<'_, AppSettings>, character: Character) -> Resu
     if !characters::valid_image(&character.image) || !characters::valid_style(&character.style) || !known_voice(&character.voice) {
         return Err("invalid".to_string());
     }
-    let next = Character { name, style_note: characters::clean_note(&character.style_note), ..character };
+    let next = Character {
+        name,
+        style_note: characters::clean_note(&character.style_note),
+        voice_prompt: characters::clean_voice_prompt(&character.voice_prompt),
+        ..character
+    };
     let mut found = false;
     state.edit_characters(|list, _| {
         let Some(c) = list.iter_mut().find(|c| c.id == next.id) else { return false };
@@ -973,6 +1025,67 @@ fn resolve_app(path: String) -> Option<AppEntry> {
     let id = notifications::app_id_for(&name);
     Some(AppEntry { id, name })
 }
+
+/// アプリのアイコン (表示用PNGのdata URL)。入っていない・見つからないアプリは None (頭文字を出す)。
+/// カタログのアプリは入っている版のバンドルIDで、見つけたアプリは名前で探す。結果は覚えておく。
+#[tauri::command(async)]
+fn app_icon(state: State<'_, AppSettings>, app_id: String) -> Option<String> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&app_id).cloned()) {
+        return hit;
+    }
+    // カタログでショートカット用のバンドルIDを持たないアプリ (通知の部品が別) は、アイコンの取り出し先だけここで決める
+    const ICON_BUNDLES: [(&str, &str); 1] = [("calendar", "com.apple.iCal")];
+    let bundle = catalog()
+        .iter()
+        .find(|a| a.id == app_id)
+        .and_then(installed_bundle)
+        .map(|(_, b)| b.to_string())
+        .or_else(|| ICON_BUNDLES.iter().find(|(id, _)| *id == app_id).map(|(_, b)| b.to_string()));
+    let name = app_label(&state, &app_id).unwrap_or_else(|| app_id.clone());
+    let icon = app_icon_png(bundle.as_deref().unwrap_or(""), &name)
+        .map(|png| {
+            use base64::Engine;
+            format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
+        });
+    if let Ok(mut c) = cache.lock() {
+        c.insert(app_id, icon.clone());
+    }
+    icon
+}
+
+/// アイコンをPNGで取り出す (表示は32pt。Retinaで粗くならないよう96px)。macOSのみ。
+#[cfg(target_os = "macos")]
+fn app_icon_png(bundle_id: &str, name: &str) -> Option<Vec<u8>> {
+    extern "C" {
+        fn readapp_app_icon_png(
+            bundle_id: *const std::os::raw::c_char,
+            name: *const std::os::raw::c_char,
+            px: i32,
+            out: *mut u8,
+            cap: usize,
+        ) -> usize;
+    }
+    const PX: i32 = 96;
+    const CAP: usize = 512 * 1024;
+    let bundle = std::ffi::CString::new(bundle_id).ok()?;
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut buf = vec![0u8; CAP];
+    // SAFETY: NUL終端の文字列と、cap バイト書ける入れ物を渡す。Swift側は cap を超えて書かない。
+    let len = unsafe { readapp_app_icon_png(bundle.as_ptr(), name.as_ptr(), PX, buf.as_mut_ptr(), CAP) };
+    if len == 0 || len > CAP {
+        return None;
+    }
+    buf.truncate(len);
+    Some(buf)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_icon_png(_bundle_id: &str, _name: &str) -> Option<Vec<u8>> {
+    None
+}
+
 
 fn shortcut_name(app_id: &str) -> Option<String> {
     if app_id.is_empty()
@@ -1421,7 +1534,7 @@ fn speak_now_as(
     let Some(request) = request else {
         return None;
     };
-    let queued = speech::system::speak(&text, &character.voice, request, telemetry::Context::new(app_id, trigger), line);
+    let queued = speech::system::speak(&text, &character.voice, &character.voice_prompt, request, telemetry::Context::new(app_id, trigger), line);
     if !queued {
         // 受け付けた直後に止められた: 吹き出しは残し、読み上げなしにする
         companion::mark(line, companion::LineState::Silent);
@@ -1662,6 +1775,7 @@ pub fn run() {
             get_last_received,
             get_observed_apps,
             resolve_app,
+            app_icon,
             get_state,
             display_name,
             get_settings,
@@ -1671,6 +1785,8 @@ pub fn run() {
             get_personas,
             set_active_character,
             create_character,
+            get_character_presets,
+            start_with_preset,
             update_character,
             delete_character,
             cloud_tts_configured,
@@ -1867,6 +1983,14 @@ mod tests {
     }
 
     #[test]
+    fn fresh_start_uses_the_moving_bubble() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.characters().len(), 1);
+        assert_eq!(settings.active().image, "preset:fuki");
+        assert_eq!(characters::presets()[0].image, "preset:fuki");
+    }
+
+    #[test]
     fn catalog_automation_names_are_safe() {
         assert!(catalog().iter().any(|a| !a.mac.is_empty()));
         for app in catalog() {
@@ -1883,6 +2007,7 @@ mod tests {
     #[test]
     fn app_character_reads_its_app_and_others_use_the_active_one() {
         let settings = AppSettings::default();
+        *settings.characters.lock().unwrap() = characters::defaults("system");
         settings.characters.lock().unwrap()[0].voice = "system:Kyoko".to_string();
         settings.characters.lock().unwrap()[2].voice = "system:Otoya".to_string();
         settings
@@ -2067,6 +2192,7 @@ mod tests {
     #[test]
     fn characters_round_trip_and_active_falls_back_to_first() {
         let settings = AppSettings::default();
+        *settings.characters.lock().unwrap() = characters::defaults("system");
         let mut list = settings.characters();
         list[1].voice = "system:Otoya".to_string();
         *settings.characters.lock().unwrap() = list;
