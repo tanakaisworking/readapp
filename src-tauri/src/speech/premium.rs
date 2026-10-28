@@ -113,6 +113,7 @@ pub(super) fn speak(
     voice_prompt: &str,
     playback: &Playback,
     request: Request,
+    started: &dyn Fn(),
 ) -> Result<(), &'static str> {
     if !playback.accepts(request) {
         return Ok(());
@@ -186,6 +187,10 @@ pub(super) fn speak(
         #[cfg(target_os = "macos")]
         {
             let volume = format!("{:.2}", f32::from(playback.volume()) / 100.0);
+            if !playback.accepts(request) {
+                return Ok(());
+            }
+            started();
             let played = playback.run(
                 Command::new("afplay").arg("-v").arg(volume).arg(&file),
                 request,
@@ -197,6 +202,7 @@ pub(super) fn speak(
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
+            started();
             playback.run(Command::new("powershell").args(["-NoProfile", "-Command", "$p = New-Object System.Media.SoundPlayer $env:READAPP_AUDIO; $p.PlaySync()"])
                 .env("READAPP_AUDIO", &file).creation_flags(0x08000000), request);
         }

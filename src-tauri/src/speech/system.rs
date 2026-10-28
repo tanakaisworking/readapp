@@ -144,8 +144,9 @@ fn queue() -> &'static mpsc::Sender<Job> {
         std::thread::spawn(move || {
             for (text, voice, voice_prompt, request, context, line) in rx {
                 if playback().accepts(request.0) {
-                    crate::companion::mark(line, crate::companion::LineState::Speaking);
-                    speak_once(&text, &voice, &voice_prompt, playback().volume(), request, context);
+                    // 「話している」にするのは音が出る直前 (音声を作っている間は準備中のまま)。小窓のキャラの口がこれに合わせて動く
+                    let started = || crate::companion::mark(line, crate::companion::LineState::Speaking);
+                    speak_once(&text, &voice, &voice_prompt, playback().volume(), request, context, &started);
                 }
                 crate::companion::mark(line, crate::companion::LineState::Done);
             }
@@ -184,13 +185,14 @@ fn afplay_volume(volume: u8) -> String {
     format!("{:.2}", f32::from(volume.min(MAX_VOLUME)) / 100.0)
 }
 
-fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: SpeechRequest, context: Context) {
+/// started は、音声を作り終えて再生を始める直前に呼ぶ。
+fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: SpeechRequest, context: Context, started: &dyn Fn()) {
     let event = SpeechEvent::start(context, voice);
     let mut remote_error = None;
     let remote = if super::gemini::is_voice(voice) {
-        Some(super::gemini::speak(text, voice, voice_prompt, playback(), request.0))
+        Some(super::gemini::speak(text, voice, voice_prompt, playback(), request.0, started))
     } else if super::premium::is_voice(voice) {
-        Some(super::premium::speak(text, voice, voice_prompt, playback(), request.0))
+        Some(super::premium::speak(text, voice, voice_prompt, playback(), request.0, started))
     } else { None };
     if let Some(result) = remote {
         match result {
@@ -212,12 +214,12 @@ fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: 
             }
         }
     }
-    let completed = speak_system(text, voice, volume, request);
+    let completed = speak_system(text, voice, volume, request, started);
     let actual_voice = if remote_error.is_some() { "system" } else { voice };
     event.finish(actual_voice, completed, !playback().accepts(request.0), remote_error);
 }
 
-fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> bool {
+fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, started: &dyn Fn()) -> bool {
     #[cfg(target_os = "macos")]
     {
         // "--" 以降は必ず本文として扱う。--input-file= 等のオプション解釈を防ぐ。
@@ -227,6 +229,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> 
         }
         if volume >= MAX_VOLUME {
             // 既定の音量: すぐ読み始められるよう、そのまま喋らせる
+            started();
             return playback().run(cmd.arg("--").arg(text), request.0);
         }
         // sayには音量の指定が無く、文中の [[volm]] はOS既定の声 (システム音声) に効かない (2026-10-06 実測)。
@@ -237,10 +240,10 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> 
         let written = playback().run(cmd.arg("-o").arg(&file).arg("--").arg(text), request.0);
         // 書き出し中に消音・停止したら再生しない。音量は最新の値を使う。
         let volume = playback().volume();
-        let played = written && volume > 0 && playback().run(
-                Command::new("afplay").arg("-v").arg(afplay_volume(volume)).arg(&file),
-                request.0,
-            );
+        let played = written && volume > 0 && playback().accepts(request.0) && {
+            started();
+            playback().run(Command::new("afplay").arg("-v").arg(afplay_volume(volume)).arg(&file), request.0)
+        };
         std::fs::remove_file(&file).ok();
         played
     }
@@ -257,6 +260,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> 
             "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = [int]$env:READAPP_VOLUME; $s.Speak($env:READAPP_SPEECH_TEXT)"
         };
         let voice_name = voice.strip_prefix("system:").unwrap_or("");
+        started();
         playback().run(
             Command::new("powershell")
                 .args(["-NoProfile", "-Command", script])
@@ -269,7 +273,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest) -> 
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = (text, voice, volume, request);
+        let _ = (text, voice, volume, request, started);
         false
     }
 }

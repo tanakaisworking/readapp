@@ -120,6 +120,7 @@ pub(super) fn speak(
     voice_prompt: &str,
     playback: &Playback,
     request: Request,
+    started: &dyn Fn(),
 ) -> Result<(), &'static str> {
     if !playback.accepts(request) {
         return Ok(());
@@ -171,6 +172,10 @@ pub(super) fn speak(
     #[cfg(target_os = "macos")]
     {
         let volume = format!("{:.2}", f32::from(playback.volume()) / 100.0);
+        if !playback.accepts(request) {
+            return Ok(());
+        }
+        started();
         if !playback.run(
             Command::new("afplay").arg("-v").arg(volume).arg(&file.0),
             request,

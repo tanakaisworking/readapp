@@ -23,9 +23,10 @@ function App() {
   const { state, personas, platform, edition } = api;
   const [view, setView] = useState<View>({ name: "home" });
   const [speaking, setSpeaking] = useState(false);
+  // 試し読みで出した小窓の行。その行が実際に再生している間だけ「話している」にする (音声を作っている間は動かさない)
+  const previewLine = useRef<{ appId: string; id: number | null } | null>(null);
   const [dismissedIssue, setDismissedIssue] = useState<string | null>(null);
   const issueId = api.speechIssue ? JSON.stringify(api.speechIssue) : null;
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const customs = useCustomImages(state?.characters);
   const systemVoices = useSystemVoices();
 
@@ -35,10 +36,27 @@ function App() {
 
   useEffect(() => {
     if (state?.speech_enabled === false || state?.volume === 0) {
-      if (timer.current) clearTimeout(timer.current);
+      previewLine.current = null;
       setSpeaking(false);
     }
   }, [state?.speech_enabled, state?.volume]);
+
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let disposed = false;
+    listen<{ id: number; app_id: string; state: string }>("companion-line", ({ payload }) => {
+      const watch = previewLine.current;
+      if (!watch) return;
+      // 押したあと最初に出た、そのアプリの行が試し読みの行
+      if (watch.id === null && payload.state === "queued" && payload.app_id === watch.appId) watch.id = payload.id;
+      if (watch.id !== payload.id) return;
+      setSpeaking(payload.state === "speaking");
+      if (payload.state === "done" || payload.state === "silent") previewLine.current = null;
+    })
+      .then((f) => (disposed ? f() : (off = f)))
+      .catch(() => {});
+    return () => { disposed = true; off?.(); };
+  }, []);
 
   // 小窓の「キャラを編集」から開かれた時は、そのキャラの編集を出す
   useEffect(() => {
@@ -61,14 +79,15 @@ function App() {
   const preview = useCallback(
     async (appId: string, characterId?: string) => {
       if (api.state?.speech_enabled === false || api.state?.volume === 0) return;
-      setSpeaking(true);
+      previewLine.current = { appId, id: null };
+      let queued = "";
       try {
-        await api.speak(appId, SAMPLE.title, SAMPLE.body, characterId);
+        queued = await api.speak(appId, SAMPLE.title, SAMPLE.body, characterId);
       } catch {
         /* 読み上げ失敗は黙って終える */
       }
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setSpeaking(false), 4000);
+      // 読み上げなかった時 (止めている間など) は見張りをやめる
+      if (!queued && previewLine.current?.id === null) previewLine.current = null;
     },
     [api],
   );
