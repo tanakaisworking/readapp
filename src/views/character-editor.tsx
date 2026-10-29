@@ -1,16 +1,13 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronLeft, ImagePlus, Play, Trash2 } from "lucide-react";
-import { AppAvatar } from "@/components/app-avatar";
 import { CharacterImage } from "@/components/character-image";
 import { LiveCharacter } from "@/components/live-character";
 import { PremiumSheet } from "@/components/premium-sheet";
 import { SpeechIssueNotice } from "@/components/speech-issue-notice";
 import { VoiceOption } from "@/components/voice-option";
-import { isOn, type SettingsApi } from "@/hooks/useSettings";
-import { KNOWN_APPS, knownApp, type FullState, type Persona, type Voice } from "@/lib/apps";
+import type { SettingsApi } from "@/hooks/useSettings";
+import type { FullState, Persona, Voice } from "@/lib/apps";
 import {
   IMAGE_EXTENSIONS,
   NAME_MAX,
@@ -164,11 +161,11 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
             {active ? (
               <span className="badge badge-soft badge-primary self-start">
                 <Check className="size-3" aria-hidden="true" />
-                全体のキャラ
+                読み上げ担当
               </span>
             ) : (
               <button type="button" className="btn btn-sm" onClick={() => void api.setActiveCharacter(character.id)}>
-                全体のキャラにする
+                このキャラに読ませる
               </button>
             )}
           </div>
@@ -301,8 +298,6 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
         </div>
       </section>
 
-      <ReadsSection api={api} state={state} character={character} />
-
       {state.characters.length > 1 && (
         <section aria-label="キャラの削除" className="pt-1">
           {confirmDelete ? (
@@ -362,73 +357,5 @@ function ImageTile({ name, src, live = false, selected, onSelect }: { name: stri
         <span className="mt-1 block truncate text-center text-[10px] font-medium text-muted">{name}</span>
       </button>
     </li>
-  );
-}
-
-/** このキャラが読むアプリ。読み上げるアプリごとに、このキャラを担当にするかを切り替える */
-function ReadsSection({ api, state, character }: { api: SettingsApi; state: FullState; character: Character }) {
-  const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
-  const isGlobal = global?.id === character.id;
-  // 通知を受け取ったことのあるアプリ (ショートカット経由のアプリは enabled に入らないことがある)
-  const [observed, setObserved] = useState<{ id: string; name: string; shortcut: boolean }[]>([]);
-  useEffect(() => {
-    let disposed = false;
-    let off: (() => void) | undefined;
-    const refresh = () =>
-      invoke<{ id: string; name: string; shortcut: boolean }[]>("get_observed_apps").then((a) => !disposed && setObserved(a)).catch(() => {});
-    void refresh();
-    // 編集中に新しい通知元から届いたら、一覧に足す
-    listen("observed-changed", () => void refresh())
-      .then((f) => (disposed ? f() : (off = f)))
-      .catch(() => {});
-    return () => { disposed = true; off?.(); };
-  }, []);
-  const extraIds = [...new Set([...Object.keys(state.enabled), ...Object.keys(state.app_characters), ...observed.map((o) => o.id)])]
-    .filter((id) => id !== "readapp" && id !== "preview" && !KNOWN_APPS.some((a) => a.id === id));
-  // 実際に読むか (Rust の should_speak と同じ条件): すべての通知を読む時は全部。アプリ別の設定があればそれ。
-  // 無ければカタログのアプリと、ショートカット経由で届いたアプリ (直接監視だけで届いたアプリは読まない)
-  const reads = (id: string) =>
-    state.speak_all || (state.enabled[id] ?? (isOn(state, id) || observed.some((o) => o.id === id && o.shortcut)));
-  const apps = [...KNOWN_APPS, ...extraIds.map((id) => ({ ...knownApp(id), name: observed.find((o) => o.id === id)?.name ?? knownApp(id).name }))]
-    // 担当が決まっているアプリは、どのキャラが担当でも残す (受信履歴は起動中だけなので、再起動後も担当を変えられるように)
-    .filter((a) => reads(a.id) || a.id in state.app_characters);
-  const readerOf = (id: string) => state.characters.find((c) => c.id === state.app_characters[id]);
-  return (
-    <section aria-labelledby="character-reads-heading">
-      <h2 id="character-reads-heading" className="section-label">読むアプリ</h2>
-      <p className="mt-1 px-1 text-xs leading-relaxed text-muted">
-        {isGlobal ? "全体のキャラなので、担当を決めていないアプリはこのキャラが読みます。" : "チェックしたアプリの通知を、このキャラが読みます。"}
-      </p>
-      {apps.length ? (
-        <ul className="surface mt-2 space-y-0.5 p-1.5">
-          {apps.map((app) => {
-            const name = state.names[app.id] ?? app.name;
-            const reader = readerOf(app.id);
-            const mine = reader?.id === character.id;
-            const note = mine ? "このキャラが担当" : reader ? reader.name + "が担当" : isGlobal ? "全体のキャラとして読む" : "全体のキャラ（" + (global?.name ?? "") + "）が読む";
-            return (
-              <li key={app.id}>
-                <label className="flex cursor-pointer items-center gap-3 rounded-field px-3 py-2 transition-colors duration-150 hover:bg-base-200">
-                  <AppAvatar id={app.id} name={name} color={app.color} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{name}</span>
-                    <span className="block truncate text-xs text-muted">{note}</span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    className="checkbox checkbox-primary checkbox-sm"
-                    checked={mine}
-                    onChange={(e) => void api.setAppCharacter(app.id, e.target.checked ? character.id : null)}
-                    aria-label={name + "をこのキャラが読む"}
-                  />
-                </label>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="surface mt-2 p-3 text-xs leading-relaxed text-muted">読み上げるアプリは、設定のトップの「読み上げ担当」で選べます。</p>
-      )}
-    </section>
   );
 }

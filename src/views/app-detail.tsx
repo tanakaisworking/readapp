@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Download, Play } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppAvatar } from "@/components/app-avatar";
-import { CharacterImage } from "@/components/character-image";
-import { knownApp, type Persona } from "@/lib/apps";
-import { styleLabel, type Character } from "@/lib/characters";
-import { effectiveVoice, voiceName, type SystemVoice } from "@/lib/voices";
-import { cn } from "@/lib/utils";
+import { knownApp } from "@/lib/apps";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
 
@@ -18,14 +14,11 @@ interface Props {
   platform: string;
   edition: string;
   speaking: boolean;
-  personas: Persona[];
-  customs: Record<string, string | null | undefined>;
-  systemVoices: SystemVoice[];
   onBack: () => void;
   onPreviewApp: (appId: string) => void;
 }
 
-export function AppDetail({ api, state, appId, platform, edition, speaking, personas, customs, systemVoices, onBack, onPreviewApp }: Props) {
+export function AppDetail({ api, state, appId, platform, edition, speaking, onBack, onPreviewApp }: Props) {
   const app = knownApp(appId);
   const appName = state.names[appId] ?? app.name;
   const on = isOn(state, appId);
@@ -35,16 +28,6 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
   const [checking, setChecking] = useState(false);
   const [axOn, setAxOn] = useState(false);
   const busy = useRef(false);
-  // 担当キャラ (いなければ、いま話すキャラが読む)
-  const assigned = state.characters.some((c) => c.id === state.app_characters[appId]) ? state.app_characters[appId] : null;
-  const activeCharacter = state.characters.find((c) => c.id === state.active_character);
-
-  // キャラを選んだらすぐ、そのキャラで試しに喋る
-  const pickCharacter = async (characterId: string | null) => {
-    await api.setAppCharacter(appId, characterId);
-    onPreviewApp(appId);
-  };
-
   useEffect(() => {
     invoke<boolean>("shortcut_installed", { appId }).then(setInstalled).catch(() => setInstalled(false));
     if (platform === "macos") {
@@ -118,10 +101,6 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
     : installed
       ? { label: "登録済み", tone: "badge-primary" }
       : { label: "未登録", tone: "badge-ghost" };
-  const characterChoices: { id: string | null; name: string; note: string; character: Character | undefined }[] = [
-    { id: null, name: "全体のキャラに任せる", note: activeCharacter ? "今は" + activeCharacter.name + "が読みます" : "", character: activeCharacter },
-    ...state.characters.map((c) => ({ id: c.id as string | null, name: c.name, note: voiceName(effectiveVoice(c.voice, api.cloudVoices), systemVoices) + " · " + styleLabel(c.style, personas), character: c })),
-  ];
 
   return (
     <div className="space-y-5 px-4 pb-6 pt-3">
@@ -158,37 +137,6 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
 
       {on && (
         <>
-          <section aria-labelledby="app-character-heading">
-            <h2 id="app-character-heading" className="section-label">このアプリのキャラ</h2>
-            <p className="mt-1 px-1 text-xs leading-relaxed text-muted">{appName}の通知を読むキャラを決められます。そのキャラの声と話し方で読みます。</p>
-            <ul className="surface mt-2 space-y-0.5 p-1.5">
-              {characterChoices.map((c) => {
-                const selected = assigned === c.id;
-                return (
-                  <li key={c.id ?? "active"}>
-                    <button
-                      type="button"
-                      aria-pressed={selected}
-                      disabled={speaking}
-                      onClick={() => void pickCharacter(c.id)}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded-field px-2.5 py-2 text-left transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-60",
-                        selected ? "bg-primary/10" : "hover:bg-base-200",
-                      )}
-                    >
-                      <CharacterImage character={c.character} customs={customs} className={cn("size-9 rounded-[10px]", c.id === null && "opacity-70")} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{c.name}</span>
-                        {c.note && <span className="block truncate text-xs text-muted">{c.note}</span>}
-                      </span>
-                      <Check className={cn("size-4 shrink-0 text-primary transition-opacity", selected ? "opacity-100" : "opacity-0")} aria-hidden="true" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-
           {platform === "macos" && edition !== "mas" && !axOn && (
             <section aria-labelledby="app-shortcut-heading">
               <h2 id="app-shortcut-heading" className="section-label">ショートカット</h2>

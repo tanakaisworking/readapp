@@ -9,7 +9,7 @@ interface Props {
   onPick: (id: string) => void;
   /** 選んでいる1人 (枠と印を付ける) */
   selected?: string;
-  /** キャラの画像の上に出す短い印 (例: 全体のキャラに「全体」) */
+  /** キャラの画像の上に出す短い印 (例: 読み上げるキャラに「担当」) */
   badge?: (c: Character) => string | null;
   /** 押した時に何が起きるかの読み上げ用の言い方 */
   pickLabel?: (c: Character) => string;

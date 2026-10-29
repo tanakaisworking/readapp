@@ -15,15 +15,15 @@ interface Props {
   onOpenApp: (id: string) => void;
 }
 
-/** 全体のキャラを選ぶ1行 (担当を決めていないアプリを読むキャラ)。MAS版でも同じものを使う */
+/** 読み上げるキャラを選ぶ1行 (どのアプリの通知もこのキャラが読む)。MAS版でも同じものを使う */
 export function GlobalCharacterRow({ api, state, customs }: Omit<Props, "onOpenApp">) {
   const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
   return (
     <li className="list-row items-center gap-3 px-3 py-2.5">
       <CharacterImage character={global} customs={customs} className="size-8 rounded-full" />
       <div className="list-col-grow min-w-0">
-        <label htmlFor="readapp-global-character" className="block text-sm font-medium">全体のキャラ</label>
-        <p className="truncate text-xs text-muted">担当のないアプリを読む</p>
+        <label htmlFor="readapp-global-character" className="block text-sm font-medium">読み上げるキャラ</label>
+        <p className="truncate text-xs text-muted">どのアプリの通知もこのキャラが読みます</p>
       </div>
       <select
         id="readapp-global-character"
@@ -37,9 +37,8 @@ export function GlobalCharacterRow({ api, state, customs }: Omit<Props, "onOpenA
   );
 }
 
-// 読み上げ担当: 全体のキャラ・すべての通知・アプリごとの読み上げと担当キャラを1つにまとめる。
+// 読み上げ担当: 読み上げるキャラ・すべての通知・アプリごとの読み上げを1つにまとめる。
 export function HomeAppList({ api, state, customs, onOpenApp }: Props) {
-  const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
   const [observed, setObserved] = useState<{ id: string; name: string }[]>([]);
   // readapp自身のテスト通知は常に読むので、切り替えの対象にしない。
   const extraIds = Object.keys(state.enabled).filter((id) => id !== "readapp" && !KNOWN_APPS.some((a) => a.id === id));
@@ -72,8 +71,6 @@ export function HomeAppList({ api, state, customs, onOpenApp }: Props) {
 
   const appRow = (app: (typeof apps)[number]) => {
     const name = state.names[app.id] ?? app.name;
-    const assignedId = state.characters.some((c) => c.id === state.app_characters[app.id]) ? state.app_characters[app.id] : "";
-    const reader = state.characters.find((c) => c.id === assignedId) ?? global;
     return (
       <li key={app.id} className="list-row items-center gap-3 px-3 py-2">
         <AppAvatar id={app.id} name={name} color={app.color} />
@@ -87,18 +84,6 @@ export function HomeAppList({ api, state, customs, onOpenApp }: Props) {
             <span className="truncate text-sm font-medium">{name}</span>
             <ChevronRight className="size-3.5 shrink-0 text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden="true" />
           </button>
-          <span className="mt-0.5 flex min-w-0 items-center gap-1">
-            <CharacterImage character={reader} customs={customs} className="size-4 rounded-full" />
-            <select
-              aria-label={`${name}を読むキャラ`}
-              className="select select-ghost select-xs h-6 min-h-6 w-auto max-w-full ps-1 text-xs text-muted"
-              value={assignedId}
-              onChange={(e) => void api.setAppCharacter(app.id, e.target.value || null)}
-            >
-              <option value="">全体のキャラ（{global?.name}）</option>
-              {state.characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </span>
         </div>
         {!state.speak_all && (
           <input

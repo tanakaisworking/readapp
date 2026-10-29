@@ -168,9 +168,6 @@ function App() {
               platform={platform}
               edition={edition}
               speaking={speaking}
-              personas={personas}
-              customs={customs}
-              systemVoices={systemVoices}
               onBack={goHome}
               onPreviewApp={(id) => void preview(id)}
             />

@@ -58,8 +58,6 @@ export interface FullState {
   active_character: string;
   /** 旧設定から引き継いだ直後 */
   migrated_from_legacy: boolean;
-  /** アプリごとの担当キャラ (app_id → キャラID)。無いアプリは、いま話すキャラが読む */
-  app_characters: Record<string, string>;
   /** 読み上げの音量 (0〜100 %) */
   volume: number;
   onboarded: boolean;

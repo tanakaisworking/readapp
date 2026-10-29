@@ -65,11 +65,9 @@ function nextState(
 interface Props {
   /** アプリの詳細 (声の設定など) を開く */
   onOpenApp: (id: string) => void;
-  /** そのアプリの担当キャラの名前 (いなければ null) */
-  characterNameOf: (id: string) => string | null;
 }
 
-export function MasAppList({ onOpenApp, characterNameOf }: Props) {
+export function MasAppList({ onOpenApp }: Props) {
   const [apps, setApps] = useState<MasApp[] | null>(null);
   const [setup, setSetup] = useState<SetupState>(loadState);
   // 次の状態を同期的に計算するための写し (押下時刻を確実に1回だけ使うため)
@@ -145,7 +143,6 @@ export function MasAppList({ onOpenApp, characterNameOf }: Props) {
             <span className="flex items-center gap-1 truncate text-xs text-muted">
               {ok && <Check className="size-3 text-success" strokeWidth={3} aria-hidden="true" />}
               {status}
-              {characterNameOf(app.id) && `・${characterNameOf(app.id)}が担当`}
             </span>
           </span>
         </button>

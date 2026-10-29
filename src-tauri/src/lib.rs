@@ -23,7 +23,7 @@ use crate::characters::Character;
 
 /// アプリ別の読み上げ設定。JSONで永続化する (M5)。
 /// 考え方は「キャラを作って選ぶ→対象アプリを決める」。
-/// 名前・画像・声・話し方はキャラの持ち物 (characters)。アプリ側はON/OFFと、担当キャラ (任意)。
+/// 名前・画像・声・話し方はキャラの持ち物 (characters)。アプリ側はON/OFFだけで、どのアプリもいま話すキャラが読む。
 pub struct AppSettings {
     enabled: Mutex<HashMap<String, bool>>,
     /// すべて読み上げモード。ONなら個別設定に関わらず読む。
@@ -38,8 +38,6 @@ pub struct AppSettings {
     active_character: Mutex<String>,
     /// 旧設定 (キャラが1つの形式) から引き継いだ直後 (小窓の背景の引き継ぎ用。実行時のみ)
     migrated_from_legacy: Mutex<bool>,
-    /// アプリごとの担当キャラ (app_id → キャラID)。無いアプリは、いま話すキャラが読む。
-    app_characters: Mutex<HashMap<String, String>>,
     /// 読み上げの音量 (0〜100 %)。
     volume: Mutex<u8>,
     onboarded: Mutex<bool>,
@@ -99,7 +97,8 @@ struct SavedSettings {
     characters: Vec<Character>,
     #[serde(default)]
     active_character: String,
-    #[serde(default)]
+    /// 以前の版の「アプリごとの担当キャラ」。ひな形の整理で担当していたキャラを残すためにだけ読み、書き出さない
+    #[serde(default, skip_serializing)]
     app_characters: HashMap<String, String>,
     /// 以前の版の「ひな形をそのまま持つキャラ」を一覧から外し済みか (外すのは1度だけ)
     #[serde(default)]
@@ -107,7 +106,7 @@ struct SavedSettings {
     /// 声の出し方を持っていなかった以前のキャラへ、画像に合う声の出し方を入れ済みか (入れるのは1度だけ)
     #[serde(default)]
     voice_prompts_seeded: bool,
-    /// 旧形式 (アプリごとの声)。読み込み時に担当キャラへ移し、書き出さない
+    /// 旧形式 (アプリごとの声)。読み込み時にその声のキャラを作って残し、書き出さない
     #[serde(default, skip_serializing)]
     app_voices: HashMap<String, String>,
     #[serde(default = "default_volume")]
@@ -148,7 +147,6 @@ impl Default for AppSettings {
             characters: Mutex::new(vec![characters::first(&default_voice_id())]),
             active_character: Mutex::new(characters::first(&default_voice_id()).id),
             migrated_from_legacy: Mutex::new(false),
-            app_characters: Mutex::new(HashMap::new()),
             volume: Mutex::new(default_volume()),
             onboarded: Mutex::new(false),
             show_in_dock: Mutex::new(false),
@@ -259,21 +257,6 @@ impl AppSettings {
         self.volume.lock().map(|v| *v).unwrap_or_else(|_| default_volume())
     }
 
-    /// そのアプリの通知を読むキャラ。担当キャラがいればそのキャラ、いなければいま話すキャラ。
-    pub fn character_for(&self, app_id: &str) -> Character {
-        self.app_characters
-            .lock()
-            .ok()
-            .and_then(|m| m.get(app_id).cloned())
-            .and_then(|id| self.character(&id))
-            .unwrap_or_else(|| self.active())
-    }
-
-    /// そのアプリで使う声 (読むキャラの声)。
-    pub fn voice_for(&self, app_id: &str) -> String {
-        self.character_for(app_id).voice
-    }
-
     pub fn voice(&self) -> String {
         self.active().voice
     }
@@ -360,7 +343,7 @@ impl AppSettings {
             voice: active.voice.clone(),
             characters: self.characters(),
             active_character: active.id,
-            app_characters: self.app_characters.lock().map(|m| m.clone()).unwrap_or_default(),
+            app_characters: HashMap::new(),
             pruned_presets: true,
             voice_prompts_seeded: true,
             app_voices: HashMap::new(),
@@ -420,7 +403,7 @@ impl AppSettings {
                         characters::seed_voice_prompts(&mut list);
                     }
                     let mut assigned = saved.app_characters;
-                    // 旧版の「アプリごとの声」は、その声のキャラを担当にする
+                    // 旧版の「アプリごとの声」は、その声のキャラを作って残す (選べば、その声で読む)
                     if assigned.is_empty() && !saved.app_voices.is_empty() {
                         let names = saved.names.clone();
                         assigned = characters::assign_legacy_voices(&mut list, &active, &saved.app_voices, |id| {
@@ -439,9 +422,6 @@ impl AppSettings {
                     }
                     if let Ok(mut a) = self.active_character.lock() {
                         *a = active;
-                    }
-                    if let Ok(mut m) = self.app_characters.lock() {
-                        *m = assigned;
                     }
                     if let Ok(mut v) = self.volume.lock() {
                         *v = saved.volume.min(speech::system::MAX_VOLUME);
@@ -722,10 +702,6 @@ fn delete_character(app: tauri::AppHandle, state: State<'_, AppSettings>, id: St
     if !removed {
         return Err("cannot_delete".to_string());
     }
-    // そのキャラが担当していたアプリは、いま話すキャラが読む
-    if let Ok(mut m) = state.app_characters.lock() {
-        m.retain(|_, c| *c != id);
-    }
     state.save();
     companion::remove_character_image(&app, &id);
     Ok(())
@@ -777,26 +753,6 @@ async fn delete_gemini_key() -> Result<(), String> {
         .await.map_err(|_| "APIキーを削除できませんでした".to_owned())?
 }
 
-/// アプリの担当キャラを決める。None で解除 (いま話すキャラが読む)。作ったキャラだけを受け付ける。
-#[tauri::command]
-fn set_app_character(state: State<'_, AppSettings>, app_id: String, character_id: Option<String>) -> Result<(), String> {
-    let app_id = app_id.trim().to_string();
-    if app_id.is_empty() {
-        return Err("invalid".to_string());
-    }
-    if character_id.as_deref().is_some_and(|id| state.character(id).is_none()) {
-        return Err("not_found".to_string());
-    }
-    if let Ok(mut m) = state.app_characters.lock() {
-        match character_id {
-            None => m.remove(&app_id),
-            Some(id) => m.insert(app_id, id),
-        };
-    }
-    state.save();
-    Ok(())
-}
-
 #[derive(Clone, Serialize)]
 struct SpeechControls {
     speech_enabled: bool,
@@ -817,7 +773,6 @@ struct FullState {
     active_character: String,
     /// 旧設定から引き継いだ直後 (小窓の背景の選択を、いまのキャラへ移す)
     migrated_from_legacy: bool,
-    app_characters: HashMap<String, String>,
     volume: u8,
     onboarded: bool,
     show_in_dock: bool,
@@ -838,7 +793,6 @@ fn get_state(state: State<'_, AppSettings>) -> FullState {
         characters: s.characters,
         active_character: s.active_character,
         migrated_from_legacy: state.migrated_from_legacy.lock().map(|b| *b).unwrap_or(false),
-        app_characters: s.app_characters,
         volume: s.volume,
         onboarded: s.onboarded,
         show_in_dock: s.show_in_dock,
@@ -1604,7 +1558,7 @@ pub(crate) fn speak_now(
     trigger: telemetry::Trigger,
     banner: Option<&str>,
 ) -> Option<String> {
-    speak_now_as(settings, &settings.character_for(app_id), app_id, title, body, trigger, banner)
+    speak_now_as(settings, &settings.active(), app_id, title, body, trigger, banner)
 }
 
 /// speak_now を、キャラを指定して使えるようにしたもの (キャラの編集中の試し読み)。
@@ -1801,7 +1755,7 @@ pub(crate) fn record_received(settings: &AppSettings, app_id: &str, title: &str,
 
 /// 「試しに喋る」: 実通知なしで変換→発声まで通す (M1)。
 /// アプリ別ON/OFFは無視するが、全体OFF・消音には従う。
-/// character_id を渡すと、そのキャラで話す (編集中のキャラの試し読み)。無ければそのアプリを読むキャラ。
+/// character_id を渡すと、そのキャラで話す (編集中のキャラの試し読み)。無ければいま話すキャラ。
 /// 変換に数秒かかるのでasync指定でメインスレッド (画面) を塞がない。
 #[tauri::command(async)]
 fn test_speak(
@@ -1817,7 +1771,7 @@ fn test_speak(
     let from_preset = preset.and_then(|p| characters::presets().into_iter().find(|c| c.id == p));
     let mut character = from_preset
         .or_else(|| character_id.and_then(|id| state.character(&id)))
-        .unwrap_or_else(|| state.character_for(&app_id));
+        .unwrap_or_else(|| state.active());
     // verbatim: 話し方で言い換えずに、その文をキャラの声で読む (オンボーディングのあいさつ)
     if verbatim == Some(true) {
         character.style = characters::STYLE_RAW.to_string();
@@ -1920,7 +1874,6 @@ pub fn run() {
             gemini_byok_status,
             save_gemini_key,
             delete_gemini_key,
-            set_app_character,
             set_volume,
             set_onboarded,
             windows_ensure_access,
@@ -2147,26 +2100,6 @@ mod tests {
     }
 
     #[test]
-    fn app_character_reads_its_app_and_others_use_the_active_one() {
-        let settings = AppSettings::default();
-        *settings.characters.lock().unwrap() = characters::defaults("system");
-        settings.characters.lock().unwrap()[0].voice = "system:Kyoko".to_string();
-        settings.characters.lock().unwrap()[2].voice = "system:Otoya".to_string();
-        settings
-            .app_characters
-            .lock()
-            .unwrap()
-            .insert("slack".to_string(), "ren".to_string());
-        assert_eq!(settings.character_for("slack").id, "ren");
-        assert_eq!(settings.voice_for("slack"), "system:Otoya");
-        assert_eq!(settings.character_for("discord").id, "mio");
-        assert_eq!(settings.voice_for("discord"), "system:Kyoko");
-        // 担当キャラが消えていたら、いま話すキャラが読む
-        settings.characters.lock().unwrap().retain(|c| c.id != "ren");
-        assert_eq!(settings.character_for("slack").id, "mio");
-    }
-
-    #[test]
     fn global_off_never_speaks_but_keeps_targets_for_the_companion() {
         let settings = AppSettings::default();
         *settings.speech_enabled.lock().unwrap() = false;
@@ -2241,26 +2174,30 @@ mod tests {
     }
 
     #[test]
-    fn app_characters_round_trip_and_old_app_voices_are_moved() {
+    fn old_app_assignments_keep_their_characters_but_everyone_hears_the_active_one() {
+        // 以前の版の担当 (おっとり男子が Slack を担当) は書き出さないが、そのキャラは一覧に残す
+        let path = std::env::temp_dir().join(format!("readapp-app-characters-{}.json", std::process::id()));
+        let mut list = characters::defaults("system");
+        list[0].voice = "system:Kyoko".to_string();
+        let saved = serde_json::json!({
+            "voice": "system", "characters": list, "active_character": "mio",
+            "app_characters": {"slack": "ren"}, "onboarded": true,
+        });
+        std::fs::write(&path, saved.to_string()).unwrap();
         let settings = AppSettings::default();
-        settings
-            .app_characters
-            .lock()
-            .unwrap()
-            .insert("slack".to_string(), "aoi".to_string());
+        settings.load(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(settings.character("ren").is_some());
         let json = serde_json::to_string(&settings.snapshot()).unwrap();
-        assert!(!json.contains("app_voices"));
-        let back: SavedSettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.app_characters.get("slack").map(String::as_str), Some("aoi"));
-        // 旧形式の「アプリごとの声」は、その声のキャラを担当にする
+        assert!(!json.contains("app_characters") && !json.contains("app_voices"));
+        // 旧形式の「アプリごとの声」は、その声のキャラとして残す
         let old = AppSettings::default();
         let path = std::env::temp_dir().join(format!("readapp-app-voices-{}.json", std::process::id()));
         std::fs::write(&path, r#"{"persona":"mio","voice":"system","app_voices":{"slack":"system:Otoya"},"onboarded":true}"#).unwrap();
         old.load(&path);
         std::fs::remove_file(&path).ok();
-        assert_eq!(old.voice_for("slack"), "system:Otoya");
-        assert_eq!(old.character_for("slack").name, "Slack用");
-        assert_eq!(old.voice_for("discord"), "system");
+        assert!(old.characters().iter().any(|c| c.name == "Slack用" && c.voice == "system:Otoya"));
+        assert_eq!(old.active().voice, "system");
     }
 
     #[test]

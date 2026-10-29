@@ -180,7 +180,7 @@ export function useSettings() {
   const deleteCharacter = useCallback(async (id: string) => {
     await invoke("delete_character", { id });
     const next = await invoke<FullState>("get_state");
-    setState((s) => (s ? { ...withCharacters(s, next), app_characters: next.app_characters } : s));
+    setState((s) => (s ? withCharacters(s, next) : s));
   }, []);
 
   /** 画像を取り込んで、そのキャラの画像にする */
@@ -188,18 +188,6 @@ export function useSettings() {
     const url = await invoke<string>("set_character_image", { id, path });
     setState((s) => (s ? withCharacters(s, { characters: s.characters.map((c) => (c.id === id ? { ...c, image: "custom" } : c)), active_character: s.active_character }) : s));
     return url;
-  }, []);
-
-  /** アプリの担当キャラ。null で解除 (いま話すキャラが読む) */
-  const setAppCharacter = useCallback(async (appId: string, characterId: string | null) => {
-    await invoke("set_app_character", { appId, characterId });
-    setState((s) => {
-      if (!s) return s;
-      const app_characters = { ...s.app_characters };
-      if (characterId) app_characters[appId] = characterId;
-      else delete app_characters[appId];
-      return { ...s, app_characters };
-    });
   }, []);
 
   // 先に表示を変えてから保存する。保存の応答を待って変えると、続けて動かした時に古い応答で値が巻き戻る
@@ -249,7 +237,6 @@ export function useSettings() {
     updateCharacter,
     deleteCharacter,
     setCharacterImage,
-    setAppCharacter,
     setVolume,
     setOnboarded,
     setShowInDock,

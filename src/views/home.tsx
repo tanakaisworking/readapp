@@ -46,10 +46,6 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
   const lastText = lastAt
     ? "最終受信 " + new Date(lastAt * 1000).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })
     : null;
-  const characterNameOf = (id: string): string | null => {
-    const assigned = state.app_characters[id];
-    return state.characters.find((c) => c.id === assigned)?.name ?? null;
-  };
 
   const refreshWatch = useCallback(async () => {
     const [last, trusted, active] = await Promise.all([
@@ -131,11 +127,11 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
   return (
     <div className="space-y-5 px-4 pb-6 pt-4">
-      <section aria-label="全体のキャラ" className="surface p-4">
+      <section aria-label="読み上げるキャラ" className="surface p-4">
         <div className="flex items-start gap-3">
           <CharacterImage character={character} customs={customs} speaking={speaking} className="size-14 rounded-[16px]" />
           <div className="min-w-0 flex-1 pt-0.5">
-            <p className="text-[11px] font-medium text-muted">全体のキャラ</p>
+            <p className="text-[11px] font-medium text-muted">読み上げるキャラ</p>
             <h1 className="truncate text-base font-semibold">{character?.name}</h1>
             <p className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-muted">
               <Volume2 className="size-3.5 shrink-0" aria-hidden="true" />
@@ -210,14 +206,14 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
       <section aria-labelledby="home-characters-heading">
         <h2 id="home-characters-heading" className="section-label">キャラ</h2>
-        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">作ったキャラです。押すと、そのキャラの画像・話し方・声・声の出し方・読むアプリをまとめて変えられます。</p>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">作ったキャラです。押すと、そのキャラの画像・話し方・声・声の出し方をまとめて変えられます。</p>
         <div className="surface mt-2 p-3">
           <CharacterList
             characters={state.characters}
             customs={customs}
             onPick={onEditCharacter}
             pickLabel={(c) => c.name + "を編集"}
-            badge={(c) => (c.id === state.active_character ? "全体" : null)}
+            badge={(c) => (c.id === state.active_character ? "担当" : null)}
             onCreate={onCreateCharacter}
           />
         </div>
@@ -225,12 +221,12 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
       <section aria-labelledby="home-readers-heading">
         <h2 id="home-readers-heading" className="section-label">読み上げ担当</h2>
-        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">読み上げるアプリと、それぞれを読むキャラを決めます。</p>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">読み上げるキャラと、読み上げるアプリを決めます。</p>
         <div className="mt-2 space-y-2">
           {mas ? (
             <>
               <ul className="surface list"><GlobalCharacterRow api={api} state={state} customs={customs} /></ul>
-              <MasAppList onOpenApp={onOpenApp} characterNameOf={characterNameOf} />
+              <MasAppList onOpenApp={onOpenApp} />
             </>
           ) : (
             <HomeAppList api={api} state={state} customs={customs} onOpenApp={onOpenApp} />
