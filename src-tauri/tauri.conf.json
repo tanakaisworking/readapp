@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "readapp",
+  "productName": "Readapp",
   "version": "0.1.0",
   "identifier": "com.hibachi.readapp",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "readappの設定",
+        "title": "Readappの設定",
         "visible": false,
         "width": 400,
         "height": 680,
@@ -21,7 +21,7 @@
       },
       {
         "label": "companion",
-        "title": "readapp",
+        "title": "Readapp",
         "visible": false,
         "width": 340,
         "height": 500,

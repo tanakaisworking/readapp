@@ -1,6 +1,7 @@
+import { GeminiKeySettings } from "@/components/gemini-key-settings";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AppWindow, Play, ShieldCheck, Volume2 } from "lucide-react";
+import { AppWindow, Play, ShieldCheck, Sparkles, Volume2 } from "lucide-react";
 import { GlobalCharacterRow, HomeAppList } from "@/components/home-app-list";
 import { AppearanceSettings } from "@/components/appearance-settings";
 import { StartupSettings } from "@/components/startup-settings";
@@ -12,7 +13,7 @@ import { VolumeSlider } from "@/components/volume-slider";
 import { openCompanion } from "@/lib/companion-window";
 import { KNOWN_APPS, type FullState, type Persona } from "@/lib/apps";
 import { styleLabel, styleSample } from "@/lib/characters";
-import { voiceName, type SystemVoice } from "@/lib/voices";
+import { effectiveVoice, voiceName, type SystemVoice } from "@/lib/voices";
 import { isOn, issueBadge, type SettingsApi } from "@/hooks/useSettings";
 import { cn } from "@/lib/utils";
 
@@ -29,9 +30,11 @@ interface Props {
   onOpenApp: (id: string) => void;
   onEditCharacter: (id: string) => void;
   onCreateCharacter: () => void;
+  /** 初回の案内 (オンボーディング) を、設定を変えずにもう一度見る */
+  onReplayOnboarding: () => void;
 }
 
-export function Home({ api, state, personas, platform, edition, speaking, customs, systemVoices, onPreview, onOpenApp, onEditCharacter, onCreateCharacter }: Props) {
+export function Home({ api, state, personas, platform, edition, speaking, customs, systemVoices, onPreview, onOpenApp, onEditCharacter, onCreateCharacter, onReplayOnboarding }: Props) {
   const [axOn, setAxOn] = useState<boolean | null>(null);
   const [watching, setWatching] = useState(false);
   const [togglingSpeech, setTogglingSpeech] = useState(false);
@@ -81,6 +84,25 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
     setLastAt(status.last?.at ?? null);
   };
 
+  // キャラの話し方は Apple Intelligence で作る。使えない間は通知をそのまま読むので、その時だけ知らせる
+  const [intelligence, setIntelligence] = useState<string | null>(null);
+  useEffect(() => {
+    if (platform !== "macos") return;
+    let disposed = false;
+    const check = () => invoke<string>("apple_intelligence_status").then((s) => !disposed && setIntelligence(s)).catch(() => {});
+    void check();
+    const onFocus = () => void check();
+    window.addEventListener("focus", onFocus);
+    return () => { disposed = true; window.removeEventListener("focus", onFocus); };
+  }, [platform]);
+  const usesStyle = state.characters.some((c) => c.style !== "raw");
+  const intelligenceNote = !usesStyle ? null
+    : intelligence === "disabled" ? "Apple Intelligenceがオフなので、通知をそのまま読み上げています。オンにすると、キャラの話し方で知らせます。"
+    : intelligence === "not_ready" ? "Apple Intelligenceの準備中です。終わるまでは、通知をそのまま読み上げます。"
+    : intelligence === "unsupported" ? "このMacはApple Intelligenceに対応していないため、キャラの話し方を使わず、通知をそのまま読み上げます。"
+    : intelligence === "unavailable" ? "Apple Intelligenceを使えないため、今は通知をそのまま読み上げています。"
+    : null;
+
   const toggleSpeech = async (enabled: boolean) => {
     setTogglingSpeech(true);
     setSpeechError(null);
@@ -117,7 +139,7 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
             <h1 className="truncate text-base font-semibold">{character?.name}</h1>
             <p className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-muted">
               <Volume2 className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="truncate">{voiceName(state.voice, systemVoices)} · {character ? styleLabel(character.style, personas) : ""}</span>
+              <span className="truncate">{voiceName(effectiveVoice(state.voice, api.cloudVoices), systemVoices)} · {character ? styleLabel(character.style, personas) : ""}</span>
               {hasIssue && (
                 <span className="badge badge-soft badge-warning badge-xs shrink-0">{issueBadge(issue)}</span>
               )}
@@ -165,6 +187,16 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
         {speechError && <p className="mt-2 text-xs text-error" role="alert">{speechError}</p>}
       </section>
 
+      {intelligenceNote && (
+        <div role="note" className="alert alert-soft alert-info flex items-center gap-3 px-3.5 py-3">
+          <Sparkles className="size-5 shrink-0" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-xs leading-relaxed text-base-content">{intelligenceNote}</p>
+          {intelligence === "disabled" && (
+            <button type="button" className="btn btn-sm shrink-0" onClick={() => void invoke("open_system_settings", { pane: "intelligence" }).catch(() => {})}>設定を開く</button>
+          )}
+        </div>
+      )}
+
       {platform === "macos" && !mas && axOn === false && (
         <div role="note" className="alert alert-soft alert-info flex items-center gap-3 px-3.5 py-3">
           <ShieldCheck className="size-5 shrink-0" aria-hidden="true" />
@@ -178,7 +210,7 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
 
       <section aria-labelledby="home-characters-heading">
         <h2 id="home-characters-heading" className="section-label">キャラ</h2>
-        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">作ったキャラです。押すと、名前・画像・話し方・声を変えられます。</p>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">作ったキャラです。押すと、そのキャラの画像・話し方・声・声の出し方・読むアプリをまとめて変えられます。</p>
         <div className="surface mt-2 p-3">
           <CharacterList
             characters={state.characters}
@@ -212,6 +244,17 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
         </div>
       </section>
 
+      {api.cloudVoices && (
+        <section aria-labelledby="home-gemini-heading">
+          <h2 id="home-gemini-heading" className="section-label">Geminiの声</h2>
+          <p className="mt-1 px-1 text-xs leading-relaxed text-muted">登録すると、キャラの声にGeminiの声を選べます。</p>
+          <div className="surface mt-2 space-y-2 p-1.5">
+            <GeminiKeySettings api={api} />
+            {api.cloudTtsConfigured && <p className="px-2 pb-1.5 text-xs leading-relaxed text-muted">「試用接続」の声はReadappのWorker経由でGoogleへ文章を送ります。</p>}
+          </div>
+        </section>
+      )}
+
       <AppearanceSettings />
 
       {platform === "macos" && <StartupSettings api={api} state={state} />}
@@ -225,6 +268,16 @@ export function Home({ api, state, personas, platform, edition, speaking, custom
             <TrySpeak platform={platform} edition={edition} onDirect={(text) => void api.speak("preview", "", text)} />
           </div>
         </details>
+        <div className="surface mt-2 flex items-center gap-3 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium">はじめの案内</p>
+            <p className="text-xs leading-relaxed text-muted">最初に出る案内をもう一度見られます。見ても設定は変わりません。</p>
+          </div>
+          <button type="button" className="btn btn-sm shrink-0" onClick={onReplayOnboarding}>
+            <Play aria-hidden="true" />
+            再生
+          </button>
+        </div>
       </section>
     </div>
   );

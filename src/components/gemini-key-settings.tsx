@@ -17,7 +17,7 @@ export function GeminiKeySettings({ api }: { api: SettingsApi }) {
     setBusy(true); setError(null); setMessage(null);
     try {
       await api.saveGeminiKey(key.trim());
-      setMessage("保存しました。上の一覧からGeminiの声を選べます。");
+      setMessage("保存しました。キャラの編集の「声」から、Geminiの声を選べます。");
       setConfirmDelete(false);
     } catch (e) {
       setError(typeof e === "string" ? e : "APIキーを保存できませんでした。もう一度お試しください。");

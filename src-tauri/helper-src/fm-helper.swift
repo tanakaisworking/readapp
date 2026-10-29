@@ -9,6 +9,22 @@ import FoundationModels
 struct Helper {
     static func main() async {
         let args = CommandLine.arguments
+        // Apple Intelligence を使えるか (設定画面で「オフなので、そのまま読んでいます」と知らせる用)
+        if args.count >= 2 && args[1] == "--availability" {
+            switch SystemLanguageModel.default.availability {
+            case .available:
+                print("available")
+            case .unavailable(.appleIntelligenceNotEnabled):
+                print("disabled")
+            case .unavailable(.modelNotReady):
+                print("not_ready")
+            case .unavailable(.deviceNotEligible):
+                print("unsupported")
+            case .unavailable:
+                print("unavailable")
+            }
+            exit(0)
+        }
         guard args.count >= 2 else {
             fputs("ERR: missing instruction\n", stderr)
             exit(1)

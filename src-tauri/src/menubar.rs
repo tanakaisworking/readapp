@@ -146,7 +146,7 @@ pub(crate) fn install(app: &AppHandle) -> tauri::Result<()> {
     let tray = TrayIconBuilder::with_id("readapp-menubar")
         .icon(icon(enabled && volume > 0))
         .icon_as_template(true)
-        .tooltip(format!("readapp — {status_text}"))
+        .tooltip(format!("Readapp — {status_text}"))
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -205,7 +205,7 @@ pub(crate) fn sync(app: &AppHandle, enabled: bool, volume: u8) {
         .set_icon_with_as_template(Some(icon(enabled && volume > 0)), true)
         .ok();
     menu.icon
-        .set_tooltip(Some(format!("readapp — {status}")))
+        .set_tooltip(Some(format!("Readapp — {status}")))
         .ok();
 }
 

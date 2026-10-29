@@ -16,7 +16,8 @@ fn main() {
         }
         return;
     }
-    if std::env::args().any(|arg| arg == "--provision-cloud-token") {
+    // サーバー経由の声の端末トークン。cloud-voices を外した版 (配布版) では受け付けない
+    if readapp_lib::speech::CLOUD_VOICES && std::env::args().any(|arg| arg == "--provision-cloud-token") {
         match readapp_lib::speech::premium::provision_token() {
             Ok(hash) => println!("{hash}"),
             Err(message) => {

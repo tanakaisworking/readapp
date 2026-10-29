@@ -5,7 +5,7 @@
   <!-- MAS版のサンドボックス権限。dmg版では使わない。 -->
   <key>com.apple.security.app-sandbox</key>
   <true/>
-  <!-- 将来のPremium音声 (サーバーTTS) 用 -->
+  <!-- 利用ログ (PostHog) の送信用。将来のサーバー音声でも使う -->
   <key>com.apple.security.network.client</key>
   <true/>
   <!-- 配布ショートカットの保存先 -->

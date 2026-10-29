@@ -52,6 +52,8 @@ pub struct AppSettings {
     last_received: Mutex<Option<ReceivedNotification>>,
     /// 見かけた通知元 (追加候補用。実行時のみ)。
     observed: Mutex<HashSet<String>>,
+    /// ショートカット経由で通知が届いたアプリ (読むかの既定が直接監視と違うので分けて覚える。起動中だけ)
+    via_shortcut: Mutex<HashSet<String>>,
     /// イベント送信用 (setup時に設定)。
     app_handle: Mutex<Option<tauri::AppHandle>>,
     /// 最近読んだ通知 (重複防止用。実行時のみ)。
@@ -154,6 +156,7 @@ impl Default for AppSettings {
             helper_path: Mutex::new(None),
             last_received: Mutex::new(None),
             observed: Mutex::new(HashSet::new()),
+            via_shortcut: Mutex::new(HashSet::new()),
             app_handle: Mutex::new(None),
             recent_spoken: Mutex::new(Vec::new()),
             received_at: Mutex::new(HashMap::new()),
@@ -327,6 +330,13 @@ impl AppSettings {
         self.observe(app_id);
     }
 
+    /// ショートカット経由で届いたことを覚える (should_speak はこの経路のアプリを既定で読む)
+    pub(crate) fn observe_shortcut(&self, app_id: &str) {
+        if let Ok(mut s) = self.via_shortcut.lock() {
+            s.insert(app_id.trim().to_string());
+        }
+    }
+
     pub(crate) fn observed_apps(&self) -> Vec<String> {
         self.observed
             .lock()
@@ -401,6 +411,7 @@ impl AppSettings {
                     } else {
                         let mut list = saved.characters;
                         characters::upgrade_defaults(&mut list);
+                        characters::fill_base_images(&mut list);
                         (list, saved.active_character)
                     };
                     let mut list = list;
@@ -664,22 +675,32 @@ fn update_character(state: State<'_, AppSettings>, character: Character) -> Resu
     if !characters::valid_image(&character.image) || !characters::valid_style(&character.style) || !known_voice(&character.voice) {
         return Err("invalid".to_string());
     }
-    let next = Character {
+    let mut next = Character {
         name,
         style_note: characters::clean_note(&character.style_note),
         voice_prompt: characters::clean_voice_prompt(&character.voice_prompt),
         ..character
     };
     let mut found = false;
+    let mut allowed = true;
     state.edit_characters(|list, _| {
         let Some(c) = list.iter_mut().find(|c| c.id == next.id) else { return false };
         found = true;
+        // 専用の画像は変えられない。画像はそのキャラ専用の画像か、取り込んだ画像だけ (ほかのキャラの画像は使えない)
+        next.base_image = c.base_image.clone();
+        if !characters::allowed_image(c, &next.image) {
+            allowed = false;
+            return false;
+        }
         if *c == next {
             return false;
         }
         *c = next.clone();
         true
     });
+    if !allowed {
+        return Err("invalid".to_string());
+    }
     if found { Ok(next) } else { Err("not_found".to_string()) }
 }
 
@@ -723,7 +744,7 @@ fn set_volume(state: State<'_, AppSettings>, volume: u8) {
 
 #[tauri::command]
 fn cloud_tts_configured() -> bool {
-    speech::premium::configured()
+    speech::CLOUD_VOICES && speech::premium::configured()
 }
 
 #[tauri::command]
@@ -743,6 +764,9 @@ async fn gemini_byok_status() -> Result<GeminiByokStatus, String> {
 
 #[tauri::command]
 async fn save_gemini_key(key: String) -> Result<(), String> {
+    if !speech::gemini_key::supported() {
+        return Err("この版ではGeminiの声を使えません".to_owned());
+    }
     tauri::async_runtime::spawn_blocking(move || speech::gemini_key::save(&key).map_err(str::to_owned))
         .await.map_err(|_| "APIキーを保存できませんでした".to_owned())?
 }
@@ -852,6 +876,9 @@ extern "C" {
     fn readapp_login_item_status() -> i32;
     fn readapp_login_item_set(enabled: bool) -> i32;
     fn readapp_open_login_items_settings();
+    fn readapp_open_settings_url(url: *const std::os::raw::c_char);
+    fn readapp_notification_status() -> i32;
+    fn readapp_request_notifications() -> bool;
 }
 
 /// ログイン時に起動するか (macOSの「ログイン項目」の状態。readapp側には保存しない)。
@@ -901,6 +928,80 @@ fn open_login_items_settings() {
     unsafe {
         readapp_open_login_items_settings();
     }
+}
+
+/// Readapp自身の通知の許可: "not_determined" / "denied" / "allowed" (macOS以外は "allowed")
+#[tauri::command(async)]
+fn notification_permission() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: 引数なし。Swift側は答えを最大5秒待つので、メインスレッド以外 (async command) から呼ぶ
+        return match unsafe { readapp_notification_status() } {
+            0 => "not_determined",
+            1 => "denied",
+            _ => "allowed",
+        }
+        .to_string();
+    }
+    #[allow(unreachable_code)]
+    "allowed".to_string()
+}
+
+/// 通知の許可を求める。まだ聞いていなければ確認が出る (答えるまで待つ)。許可されたら true。
+#[tauri::command(async)]
+fn request_notification_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: 引数なし。答えを待つので、メインスレッド以外 (async command) から呼ぶ
+        return unsafe { readapp_request_notifications() };
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
+/// システム設定の決まった画面を開く。"notifications" (Readappの通知) / "intelligence" (Apple Intelligence)
+/// 通知は、一度も許可を求めていないと一覧にReadappが出ないので、先に求めてから開く (Reki noteと同じ考え方)
+#[tauri::command(async)]
+fn open_system_settings(pane: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if pane == "notifications" && unsafe { readapp_notification_status() } == 0 {
+        // SAFETY: 引数なし。async command なのでメインスレッドを止めない
+        let granted = unsafe { readapp_request_notifications() };
+        if granted {
+            return Ok(());
+        }
+    }
+    let url = match pane.as_str() {
+        "notifications" => "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.hibachi.readapp",
+        "intelligence" => "x-apple.systempreferences:com.apple.Siri-Settings.extension",
+        _ => return Err("invalid".to_string()),
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let url = std::ffi::CString::new(url).map_err(|_| "invalid".to_string())?;
+        // SAFETY: NUL終端の文字列を渡し、呼び出し中は有効
+        unsafe { readapp_open_settings_url(url.as_ptr()) };
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = url;
+    Ok(())
+}
+
+/// キャラの話し方 (Apple Intelligence) を使えるか。使えない間は通知をそのまま読む。
+/// "available" / "disabled" / "not_ready" / "unsupported" / "unavailable"、macOS以外とヘルパーが無い時は "unsupported"
+#[tauri::command]
+async fn apple_intelligence_status(state: State<'_, AppSettings>) -> Result<String, String> {
+    let helper = state.helper_path();
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        if let Some(helper) = helper {
+            return transform::apple_foundation_model::availability(&helper);
+        }
+        let _ = helper;
+        "unsupported".to_string()
+    })
+    .await
+    .map_err(|_| "failed".to_string())
 }
 
 #[tauri::command]
@@ -983,21 +1084,29 @@ struct ObservedApp {
     at: Option<u64>,
     /// この起動中の受信回数
     count: u64,
+    /// ショートカット経由で届いたことがある (アプリ別の設定が無くても読む)
+    shortcut: bool,
 }
 
 /// 見かけた通知元の一覧 (追加候補・設定の確認表示用)。表示名と最終受信時刻付き。
 #[tauri::command]
 fn get_observed_apps(state: State<'_, AppSettings>) -> Vec<ObservedApp> {
+    observed_list(&state)
+}
+
+fn observed_list(state: &AppSettings) -> Vec<ObservedApp> {
     let received = state.received_at.lock().map(|m| m.clone()).unwrap_or_default();
+    let shortcut = state.via_shortcut.lock().map(|s| s.clone()).unwrap_or_default();
     state
         .observed_apps()
         .into_iter()
         .map(|id| {
             let (at, count) = received.get(&id).map(|(a, c)| (Some(*a), *c)).unwrap_or((None, 0));
             ObservedApp {
-                name: app_label(&state, &id).unwrap_or_else(|| id.clone()),
+                name: app_label(state, &id).unwrap_or_else(|| id.clone()),
                 at,
                 count,
+                shortcut: shortcut.contains(&id),
                 id,
             }
         })
@@ -1648,6 +1757,8 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
                 }
             }
             IntentTarget::App { id, name } => {
+                // 経路を先に覚える (observe が知らせる observed-changed で一覧を取り直した時に、経路も揃っているように)
+                settings.observe_shortcut(&id);
                 settings.observe_named(&id, &name);
                 record_received(&settings, &id, "", &text);
                 speak_notification(&settings, &id, "", &text, Route::Shortcut);
@@ -1659,6 +1770,7 @@ pub extern "C" fn readapp_intent_speak(app: *const std::os::raw::c_char, text: *
 /// URLスキーム受信 (M3): readapp://notify?... をパイプラインに流す。
 fn handle_notify_url(settings: &AppSettings, url: &url::Url) {
     if let Some(n) = notifications::macos::parse_notify_url(url) {
+        settings.observe_shortcut(&n.app_id);
         settings.observe(&n.app_id);
         record_received(settings, &n.app_id, &n.title, &n.body);
         speak_notification(settings, &n.app_id, &n.title, &n.body, Route::Shortcut);
@@ -1698,8 +1810,18 @@ fn test_speak(
     title: String,
     body: String,
     character_id: Option<String>,
+    preset: Option<String>,
+    verbatim: Option<bool>,
 ) -> Result<String, String> {
-    let character = character_id.and_then(|id| state.character(&id)).unwrap_or_else(|| state.character_for(&app_id));
+    // preset: オンボーディングの再生中に、まだ作っていないひな形のキャラで試す (キャラは作らない)
+    let from_preset = preset.and_then(|p| characters::presets().into_iter().find(|c| c.id == p));
+    let mut character = from_preset
+        .or_else(|| character_id.and_then(|id| state.character(&id)))
+        .unwrap_or_else(|| state.character_for(&app_id));
+    // verbatim: 話し方で言い換えずに、その文をキャラの声で読む (オンボーディングのあいさつ)
+    if verbatim == Some(true) {
+        character.style = characters::STYLE_RAW.to_string();
+    }
     Ok(speak_now_as(&state, &character, &app_id, &title, &body, telemetry::Trigger::Preview, None).unwrap_or_default())
 }
 
@@ -1757,6 +1879,10 @@ pub fn run() {
             greet,
             get_platform,
             get_edition,
+            open_system_settings,
+            notification_permission,
+            request_notification_permission,
+            apple_intelligence_status,
             open_shortcuts_app,
             add_notify_automation,
             notify_automation_installed,
@@ -1800,6 +1926,7 @@ pub fn run() {
             windows_ensure_access,
             test_speak,
             companion::companion_feed,
+            companion::companion_replay,
             companion::character_image,
             companion::set_character_image,
             companion::show_companion,
@@ -1983,6 +2110,21 @@ mod tests {
     }
 
     #[test]
+    fn observed_apps_tell_which_came_through_a_shortcut() {
+        let settings = AppSettings::default();
+        settings.observe("line");
+        settings.observe_shortcut("line");
+        settings.observe("dev.direct");
+        let list = observed_list(&settings);
+        let find = |id: &str| list.iter().find(|a| a.id == id).map(|a| a.shortcut);
+        assert_eq!(find("line"), Some(true));
+        assert_eq!(find("dev.direct"), Some(false));
+        // 届いた経路どおり: ショートカット経由の未登録アプリは読み、直接監視だけの未登録アプリは読まない
+        assert!(should_speak(&settings, "line", Route::Shortcut));
+        assert!(!should_speak(&settings, "dev.direct", Route::Direct));
+    }
+
+    #[test]
     fn fresh_start_uses_the_moving_bubble() {
         let settings = AppSettings::default();
         assert_eq!(settings.characters().len(), 1);
@@ -2125,6 +2267,8 @@ mod tests {
     fn readapp_self_notification_always_speaks() {
         let settings = AppSettings::default();
         assert_eq!(notifications::app_id_for("readapp"), SELF_APP_ID);
+        // 表示名を Readapp にしても、自分の通知として扱う
+        assert_eq!(notifications::app_id_for("Readapp"), SELF_APP_ID);
         settings.enabled.lock().unwrap().insert(SELF_APP_ID.to_string(), false);
         assert!(should_speak(&settings, SELF_APP_ID, Route::Direct));
     }

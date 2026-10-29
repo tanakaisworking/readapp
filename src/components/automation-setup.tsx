@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, Check, ExternalLink, Keyboard, Plus } from "lucide-react";
+import { Bell, BellRing, Check, ExternalLink, Keyboard, Plus } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AutomationListHint } from "@/components/automation-list-hint";
@@ -52,6 +52,27 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
   const [testSent, setTestSent] = useState(false);
   const [received, setReceived] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Readapp自身の通知が許可されていない (システム設定の「通知」を開くボタンを出す)
+  const [denied, setDenied] = useState(false);
+  // Readapp自身の通知の許可。テスト通知に要るうえ、一度も求めていないと設定の一覧にもReadappが出ないので、最初に求める
+  const [notify, setNotify] = useState<"not_determined" | "denied" | "allowed" | null>(null);
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    const check = () => invoke<"not_determined" | "denied" | "allowed">("notification_permission").then(setNotify).catch(() => setNotify("allowed"));
+    void check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, []);
+  const allowNotifications = async () => {
+    if (notify === "denied") {
+      await invoke("open_system_settings", { pane: "notifications" }).catch(() => {});
+      return;
+    }
+    setAsking(true);
+    const ok = await invoke<boolean>("request_notification_permission").catch(() => false);
+    setAsking(false);
+    setNotify(ok ? "allowed" : "denied");
+  };
   const startedAt = useRef(Math.floor(Date.now() / 1000));
   const stepRefs = useRef<(HTMLLIElement | null)[]>([]);
   const doneRef = useRef<HTMLDivElement | null>(null);
@@ -195,7 +216,7 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
       body: (
         <>
           <p>
-            青い「＋」を押して、読み上げたいアプリを足します。「readapp」は確認用なので、そのまま残してください。
+            青い「＋」を押して、読み上げたいアプリを足します。「Readapp」は確認用なので、そのまま残してください。
           </p>
           <MockApps />
           <div className="mt-3 flex items-center gap-2">
@@ -222,14 +243,14 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
       body: (
         <>
           <p>
-            ショートカットの「オートメーション」一覧で、「readappからの通知を受け取ったとき」の右端のスイッチをオンにします。
+            ショートカットの「オートメーション」一覧で、「Readappからの通知を受け取ったとき」の右端のスイッチをオンにします。
             {practice
-              ? "テスト通知を送り、readappの通知が読み上げられたら完了です。"
+              ? "テスト通知を送り、Readappの通知が読み上げられたら完了です。"
               : "最後にテスト通知を送り、読み上げられたら完了です。"}
           </p>
           <MockToggle />
           <AutomationListHint />
-          <p className="mt-2 text-xs">初回は右上に「readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
+          <p className="mt-2 text-xs">初回は右上に「Readapp」の通知の許可が出ます。「許可」を押すと、そのままテスト通知が届きます。</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -238,12 +259,14 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
                 try {
                   await invoke("send_test_notification");
                   setError(null);
+                  setDenied(false);
                   setTestSent(true);
                 } catch (e) {
                   setTestSent(false);
+                  setDenied(e === "denied");
                   setError(
                     e === "denied"
-                      ? "readappの通知がオフです。システム設定の「通知」で readapp を許可してから、もう一度送ってください。"
+                      ? "Readappの通知がオフです。「通知の設定を開く」で Readapp の通知をオンにしてから、もう一度送ってください。"
                       : "テスト通知を送れませんでした。もう一度お試しください。",
                   );
                 }
@@ -272,6 +295,22 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
 
   return (
     <div>
+      {notify && notify !== "allowed" && (
+        <div className="mb-2 flex items-center gap-3 rounded-box border border-primary/40 bg-primary/5 px-3.5 py-3" role="note">
+          <BellRing className="size-5 shrink-0 text-primary" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium">まず、Readappの通知を許可</p>
+            <p className="text-xs leading-relaxed text-muted">
+              {notify === "denied"
+                ? "Readappの通知がオフです。設定を開いてオンにしてください。"
+                : "確かめ用の通知を出すのに使います。押すと確認が出るので「許可」を選んでください。"}
+            </p>
+          </div>
+          <button type="button" className="btn btn-primary btn-sm shrink-0" onClick={() => void allowNotifications()} disabled={asking}>
+            {asking ? <span className="loading loading-dots loading-xs" aria-hidden="true" /> : notify === "denied" ? "設定を開く" : "許可する"}
+          </button>
+        </div>
+      )}
       <ol className="space-y-2" aria-label="通知を受け取る設定">
         {(practice ? [0, 2] : [0, 1, 2]).map((i, order) => {
           const step = steps[i];
@@ -330,7 +369,7 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
           <p className="mt-1 text-xs leading-relaxed text-muted">
             {practice
               ? received
-                ? "readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
+                ? "Readappの通知を読み上げられました。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順（追加してオン）で読み上げられます。"
                 : "読み上げはまだ確認できていません。ホームの「試しに喋る」で、あとから確かめられます。ほかのアプリも、ホームの「読み上げるアプリ」から同じ手順で追加できます。"
               : received
                 ? "通知を受け取りました。選んだアプリに通知が来るたびに読み上げます。"
@@ -359,6 +398,11 @@ export function AutomationSetup({ onDoneChange, practice = false }: Props) {
       {error && (
         <p className="mt-2 text-xs text-muted" role="alert">
           {error}
+          {denied && (
+            <button type="button" className="btn btn-xs ms-2" onClick={() => void invoke("open_system_settings", { pane: "notifications" }).catch(() => {})}>
+              通知の設定を開く
+            </button>
+          )}
         </p>
       )}
     </div>
@@ -409,11 +453,11 @@ function MockAdd() {
 
 function MockApps() {
   return (
-    <MockFrame label="通知オートメーションの設定。readappの横の「＋」を押して読み上げたいアプリを足す">
+    <MockFrame label="通知オートメーションの設定。Readappの横の「＋」を押して読み上げたいアプリを足す">
       <p className="flex flex-wrap items-center gap-1 text-[11px] text-base-content">
         <Bell className="h-3.5 w-3.5 text-rose-500" aria-hidden="true" />
         <span className="font-medium" style={{ color: SHORTCUTS_BLUE }}>
-          readapp
+          Readapp
         </span>
         <Target>＋</Target>
         からの通知を受け取ったとき
@@ -424,11 +468,11 @@ function MockApps() {
 
 function MockToggle() {
   return (
-    <MockFrame label="ショートカットのオートメーション一覧。readappからの通知を受け取ったとき の行の右端のスイッチをオンにする">
+    <MockFrame label="ショートカットのオートメーション一覧。Readappからの通知を受け取ったとき の行の右端のスイッチをオンにする">
       <div className="flex items-center gap-2 text-[11px]">
         <Bell className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-hidden="true" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium text-base-content">readappからの通知を受け取ったとき</span>
+          <span className="block truncate font-medium text-base-content">Readappからの通知を受け取ったとき</span>
           <span className="block truncate text-[10px] text-muted">{AUTOMATION}</span>
         </span>
         <span

@@ -31,6 +31,10 @@ pub struct Character {
     /// Geminiの声で読む時の声の出し方 (声の高さ・速さ・気持ちなど)。システム音声では使わない
     #[serde(default)]
     pub voice_prompt: String,
+    /// このキャラ専用の画像 ("preset:<id>")。画像とキャラは結びついているので、選べる画像は
+    /// これか、自分で取り込んだ画像 ("custom") だけ。空なら取り込んだ画像だけ。
+    #[serde(default)]
+    pub base_image: String,
 }
 
 fn preset(id: &str) -> String {
@@ -91,6 +95,7 @@ pub fn defaults(voice: &str) -> Vec<Character> {
             style: style.to_string(),
             style_note: String::new(),
             voice_prompt: preset_voice_prompt(&preset(image)),
+            base_image: preset(image),
         })
         .collect()
 }
@@ -111,6 +116,7 @@ fn extra_presets(voice: &str) -> Vec<Character> {
             style: style.to_string(),
             style_note: String::new(),
             voice_prompt: preset_voice_prompt(&preset(image)),
+            base_image: preset(image),
         })
         .collect()
 }
@@ -121,10 +127,15 @@ pub fn first(voice: &str) -> Character {
     extra_presets(voice).remove(0)
 }
 
+/// ひな形を選ぶ画面での並び。ふきだしのあとは 女子・男子・ねこ・文鳥
+const PRESET_ORDER: [&str; 4] = ["mio", "ren", "aoi", "shiro"];
+
 /// キャラのひな形 (声はシステム音声)。いちばん上は最初のキャラと同じ、動くふきだし。
 pub fn presets() -> Vec<Character> {
+    let mut rest = defaults("system");
+    rest.sort_by_key(|c| PRESET_ORDER.iter().position(|id| *id == c.id).unwrap_or(usize::MAX));
     let mut list = extra_presets("system");
-    list.extend(defaults("system"));
+    list.extend(rest);
     list
 }
 
@@ -194,6 +205,34 @@ pub fn valid_style(style: &str) -> bool {
     style == STYLE_RAW || style == STYLE_CUSTOM || crate::transform::personas().iter().any(|p| p.id == style)
 }
 
+/// 以前の版のキャラに、専用の画像を入れる (読み込み時)。変えたら true。
+/// - 最初から入っていたキャラ (IDが同じ) と、ひな形から作ったキャラ (名前がひな形のまま) は、ひな形の画像
+/// - それ以外は今の画像 (取り込んだ画像なら空のまま)
+/// 専用の画像と違う同梱の画像 (ほかのキャラの画像) を使っていたら、専用の画像に戻す。取り込んだ画像はそのまま。
+pub fn fill_base_images(list: &mut [Character]) -> bool {
+    let mut changed = false;
+    for c in list.iter_mut().filter(|c| c.base_image.is_empty()) {
+        let template = DEFAULTS
+            .iter()
+            .chain(EXTRA_PRESETS.iter())
+            .find(|d| d.0 == c.id)
+            .or_else(|| DEFAULTS.iter().chain(EXTRA_PRESETS.iter()).find(|d| d.1 == c.name));
+        let own = template.map(|d| preset(d.2)).or_else(|| c.image.starts_with("preset:").then(|| c.image.clone()));
+        let Some(own) = own else { continue };
+        if c.image != IMAGE_CUSTOM && c.image != own {
+            c.image = own.clone();
+        }
+        c.base_image = own;
+        changed = true;
+    }
+    changed
+}
+
+/// このキャラに使える画像か (専用の画像か、取り込んだ画像)
+pub fn allowed_image(c: &Character, image: &str) -> bool {
+    image == IMAGE_CUSTOM || (!c.base_image.is_empty() && image == c.base_image)
+}
+
 pub fn valid_image(image: &str) -> bool {
     image == IMAGE_CUSTOM || image.strip_prefix("preset:").is_some_and(|id| PRESET_IMAGES.contains(&id))
 }
@@ -234,6 +273,7 @@ pub fn blank(existing: &[Character], voice: &str) -> Character {
     Character {
         id: new_id(existing),
         name: "新しいキャラ".to_string(),
+        base_image: image.clone(),
         image,
         voice: voice.to_string(),
         style: "mio".to_string(),
@@ -424,5 +464,44 @@ mod tests {
         assert_eq!(made.voice, "gemini:Puck");
         assert_eq!(made.style, "mio");
         assert_eq!(list.len(), 5);
+    }
+
+    #[test]
+    fn image_stays_with_its_character() {
+        let mut list = defaults("system");
+        // 専用の画像と、取り込んだ画像だけを使える
+        assert!(allowed_image(&list[0], "preset:girl"));
+        assert!(allowed_image(&list[0], IMAGE_CUSTOM));
+        assert!(!allowed_image(&list[0], "preset:cat"));
+        // 以前の版のキャラ (専用の画像を持っていない) には、ひな形か今の画像を入れる
+        list.iter_mut().for_each(|c| c.base_image.clear());
+        list[0].image = IMAGE_CUSTOM.to_string();
+        let mut other = blank(&list, "system");
+        other.base_image.clear();
+        let other_image = other.image.clone();
+        list.push(other);
+        assert!(fill_base_images(&mut list));
+        assert_eq!(list[0].base_image, "preset:girl");
+        assert_eq!(list[4].base_image, other_image);
+        assert!(!fill_base_images(&mut list));
+        // ひな形から作ったキャラ (IDは新しい) が、ほかのキャラの画像になっていたら、ひな形の画像に戻す
+        let mut made = from_preset(&list, "fuki").unwrap();
+        made.base_image.clear();
+        made.image = "preset:shiba".to_string();
+        let mut list = vec![made];
+        assert!(fill_base_images(&mut list));
+        assert_eq!(list[0].base_image, "preset:fuki");
+        assert_eq!(list[0].image, "preset:fuki");
+        // 取り込んだ画像を使っていたら、画像はそのまま
+        list[0].base_image.clear();
+        list[0].image = IMAGE_CUSTOM.to_string();
+        assert!(fill_base_images(&mut list));
+        assert_eq!(list[0].image, IMAGE_CUSTOM);
+    }
+
+    #[test]
+    fn presets_are_listed_bubble_girl_boy_cat_bird() {
+        let images: Vec<String> = presets().into_iter().map(|c| c.image).collect();
+        assert_eq!(images, ["preset:fuki", "preset:girl", "preset:boy", "preset:cat", "preset:buncho"]);
     }
 }

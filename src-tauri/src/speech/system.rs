@@ -8,9 +8,11 @@
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::sync::{mpsc, OnceLock};
 
 use super::playback::{Playback, Request};
+use crate::companion::{LineState, Replay};
 use crate::telemetry::{Context, SpeechEvent};
 
 pub fn set_app_handle(handle: tauri::AppHandle) {
@@ -134,21 +136,51 @@ pub(crate) fn request() -> Option<SpeechRequest> {
 #[derive(Clone, Copy)]
 pub(crate) struct SpeechRequest(Request);
 
-/// 読み上げ1件 (文・声・声の出し方・要求・計測・小窓の行)
-type Job = (String, String, String, SpeechRequest, Context, u64);
+/// 順番待ちの1件。読み上げと、吹き出しからの鳴らし直し
+enum Job {
+    /// 文・声・声の出し方・要求・計測・小窓の行
+    Speak { text: String, voice: String, voice_prompt: String, request: SpeechRequest, context: Context, line: u64 },
+    Replay { text: String, replay: Replay, request: SpeechRequest, line: u64 },
+}
 
 fn queue() -> &'static mpsc::Sender<Job> {
     static TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
     TX.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
-            for (text, voice, voice_prompt, request, context, line) in rx {
-                if playback().accepts(request.0) {
-                    // 「話している」にするのは音が出る直前 (音声を作っている間は準備中のまま)。小窓のキャラの口がこれに合わせて動く
-                    let started = || crate::companion::mark(line, crate::companion::LineState::Speaking);
-                    speak_once(&text, &voice, &voice_prompt, playback().volume(), request, context, &started);
+            for job in rx {
+                match job {
+                    Job::Speak { text, voice, voice_prompt, request, context, line } => {
+                        if playback().accepts(request.0) {
+                            // 「話している」にするのは音が出る直前 (音声を作っている間は準備中のまま)。小窓のキャラの口がこれに合わせて動く。
+                            // 作った音声は吹き出しに紐づけ、あとで鳴らし直せるようにする (システム音声は同じ文章を読み直す)
+                            let started = |audio: Option<&Path>| {
+                                let replay = match audio.and_then(|p| std::fs::read(p).ok()) {
+                                    Some(bytes) => Replay::Audio(std::sync::Arc::new(bytes)),
+                                    None => Replay::Say(voice.clone()),
+                                };
+                                crate::companion::keep_replay(line, replay);
+                                crate::companion::mark(line, LineState::Speaking);
+                            };
+                            speak_once(&text, &voice, &voice_prompt, playback().volume(), request, context, &started);
+                        }
+                        crate::companion::mark(line, LineState::Done);
+                    }
+                    Job::Replay { text, replay, request, line } => {
+                        if playback().accepts(request.0) {
+                            let started = |_: Option<&Path>| crate::companion::mark(line, LineState::Speaking);
+                            match &replay {
+                                Replay::Say(voice) => {
+                                    speak_system(&text, voice, playback().volume(), request, &started);
+                                }
+                                Replay::Audio(audio) => {
+                                    play_audio(audio, request, &started);
+                                }
+                            }
+                        }
+                        crate::companion::mark(line, LineState::Done);
+                    }
                 }
-                crate::companion::mark(line, crate::companion::LineState::Done);
             }
         });
         tx
@@ -161,7 +193,59 @@ pub(crate) fn speak(text: &str, voice: &str, voice_prompt: &str, request: Speech
     if text.is_empty() || !playback().accepts(request.0) {
         return false;
     }
-    queue().send((text.to_string(), voice.to_string(), voice_prompt.to_string(), request, context, line)).is_ok()
+    queue()
+        .send(Job::Speak { text: text.to_string(), voice: voice.to_string(), voice_prompt: voice_prompt.to_string(), request, context, line })
+        .is_ok()
+}
+
+/// 吹き出しから鳴らし直す要求をキューへ (ほかの読み上げと重ならず、止めればすぐ止まる)。
+pub(crate) fn replay(text: &str, replay: Replay, request: SpeechRequest, line: u64) -> bool {
+    if !playback().accepts(request.0) {
+        return false;
+    }
+    queue().send(Job::Replay { text: text.to_string(), replay, request, line }).is_ok()
+}
+
+/// 持っておいた音声 (WAV) を鳴らす。再生の間だけ一時ファイルに書き、終わったら消す。
+fn play_audio(audio: &[u8], request: SpeechRequest, started: &dyn Fn(Option<&Path>)) -> bool {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!("{SPEECH_FILE_PREFIX}replay-{}-{n}.wav", std::process::id()));
+    let written = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&file)?.write_all(audio)
+    })()
+    .is_ok();
+    let played = written && playback().accepts(request.0) && {
+        started(None);
+        #[cfg(target_os = "macos")]
+        {
+            playback().run(Command::new("afplay").arg("-v").arg(afplay_volume(playback().volume())).arg(&file), request.0)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            playback().run(
+                Command::new("powershell")
+                    .args(["-NoProfile", "-Command", "$p = New-Object System.Media.SoundPlayer $env:READAPP_AUDIO; $p.PlaySync()"])
+                    .env("READAPP_AUDIO", &file)
+                    .creation_flags(0x08000000),
+                request.0,
+            )
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            false
+        }
+    };
+    std::fs::remove_file(&file).ok();
+    played
 }
 
 /// 音量を下げた時の書き出し先の名前の頭。通知本文の音声なので、前回の終了時に残ったものは消す。
@@ -185,15 +269,19 @@ fn afplay_volume(volume: u8) -> String {
     format!("{:.2}", f32::from(volume.min(MAX_VOLUME)) / 100.0)
 }
 
-/// started は、音声を作り終えて再生を始める直前に呼ぶ。
-fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: SpeechRequest, context: Context, started: &dyn Fn()) {
+/// started は、音声を作り終えて再生を始める直前に呼ぶ (作った音声のファイルがあれば渡す)。
+fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: SpeechRequest, context: Context, started: &dyn Fn(Option<&Path>)) {
     let event = SpeechEvent::start(context, voice);
     let mut remote_error = None;
-    let remote = if super::gemini::is_voice(voice) {
+    // Geminiの声・サーバー経由の声を使わない版では、その声を選んでいてもMacの標準の声で読む
+    let remote = if !super::CLOUD_VOICES {
+        None
+    } else if super::gemini::is_voice(voice) {
         Some(super::gemini::speak(text, voice, voice_prompt, playback(), request.0, started))
     } else if super::premium::is_voice(voice) {
         Some(super::premium::speak(text, voice, voice_prompt, playback(), request.0, started))
     } else { None };
+    let routed = remote.is_some();
     if let Some(result) = remote {
         match result {
             Ok(()) => {
@@ -215,11 +303,11 @@ fn speak_once(text: &str, voice: &str, voice_prompt: &str, volume: u8, request: 
         }
     }
     let completed = speak_system(text, voice, volume, request, started);
-    let actual_voice = if remote_error.is_some() { "system" } else { voice };
+    let actual_voice = if remote_error.is_some() || !routed && !voice.starts_with("system") { "system" } else { voice };
     event.finish(actual_voice, completed, !playback().accepts(request.0), remote_error);
 }
 
-fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, started: &dyn Fn()) -> bool {
+fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, started: &dyn Fn(Option<&Path>)) -> bool {
     #[cfg(target_os = "macos")]
     {
         // "--" 以降は必ず本文として扱う。--input-file= 等のオプション解釈を防ぐ。
@@ -229,7 +317,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, sta
         }
         if volume >= MAX_VOLUME {
             // 既定の音量: すぐ読み始められるよう、そのまま喋らせる
-            started();
+            started(None);
             return playback().run(cmd.arg("--").arg(text), request.0);
         }
         // sayには音量の指定が無く、文中の [[volm]] はOS既定の声 (システム音声) に効かない (2026-10-06 実測)。
@@ -241,7 +329,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, sta
         // 書き出し中に消音・停止したら再生しない。音量は最新の値を使う。
         let volume = playback().volume();
         let played = written && volume > 0 && playback().accepts(request.0) && {
-            started();
+            started(None);
             playback().run(Command::new("afplay").arg("-v").arg(afplay_volume(volume)).arg(&file), request.0)
         };
         std::fs::remove_file(&file).ok();
@@ -260,7 +348,7 @@ fn speak_system(text: &str, voice: &str, volume: u8, request: SpeechRequest, sta
             "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = [int]$env:READAPP_VOLUME; $s.Speak($env:READAPP_SPEECH_TEXT)"
         };
         let voice_name = voice.strip_prefix("system:").unwrap_or("");
-        started();
+        started(None);
         playback().run(
             Command::new("powershell")
                 .args(["-NoProfile", "-Command", script])

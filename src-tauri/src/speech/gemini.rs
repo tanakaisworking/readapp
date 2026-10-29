@@ -120,7 +120,7 @@ pub(super) fn speak(
     voice_prompt: &str,
     playback: &Playback,
     request: Request,
-    started: &dyn Fn(),
+    started: &dyn Fn(Option<&std::path::Path>),
 ) -> Result<(), &'static str> {
     if !playback.accepts(request) {
         return Ok(());
@@ -175,7 +175,7 @@ pub(super) fn speak(
         if !playback.accepts(request) {
             return Ok(());
         }
-        started();
+        started(Some(&file.0));
         if !playback.run(
             Command::new("afplay").arg("-v").arg(volume).arg(&file.0),
             request,

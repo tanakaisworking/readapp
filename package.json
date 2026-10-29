@@ -13,7 +13,7 @@
     "build:dmg": "APPLE_SIGNING_IDENTITY=\"Developer ID Application: HIBACHI inc. (TYX92DB6TA)\" tauri build",
     "build:win": "bash scripts/build-win.sh",
     "package:mas": "bash scripts/package-mas.sh",
-    "sign:local": "codesign --deep --force --verify --sign \"Developer ID Application: HIBACHI inc. (TYX92DB6TA)\" src-tauri/target/release/bundle/macos/readapp.app"
+    "sign:local": "codesign --deep --force --verify --sign \"Developer ID Application: HIBACHI inc. (TYX92DB6TA)\" src-tauri/target/release/bundle/macos/Readapp.app"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

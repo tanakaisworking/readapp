@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ArrowDown, Check, Pencil, Pin, Settings2, UsersRound, VolumeX, X } from "lucide-react";
+import { ArrowDown, Check, Pencil, Pin, Settings2, UsersRound, Volume2, VolumeX, X } from "lucide-react";
 import { knownApp } from "@/lib/apps";
 import { useAppIcon } from "@/components/app-avatar";
 import { LiveCharacter } from "@/components/live-character";
@@ -32,6 +32,8 @@ interface Line {
   state: "queued" | "speaking" | "done" | "silent";
   /** 押すと通知か送ってきたアプリを開ける */
   openable?: boolean;
+  /** 読み上げた音声を鳴らし直せる */
+  replayable?: boolean;
 }
 
 const PIN_KEY = "readapp.companion.pinned";
@@ -42,7 +44,7 @@ const CHARS_PER_SECOND = 9;
 
 function lineLabel(line: Line): string {
   if (line.app_name) return line.app_name;
-  if (line.app_id === "preview") return "readapp";
+  if (line.app_id === "preview") return "Readapp";
   return "通知";
 }
 
@@ -106,13 +108,15 @@ function useTyped(text: string, speaking: boolean): string {
   return text.slice(0, shown);
 }
 
-function Bubble({ line, onOpen }: { line: Line; onOpen?: (line: Line) => void }) {
+function Bubble({ line, onOpen, onReplay }: { line: Line; onOpen?: (line: Line) => void; onReplay?: (line: Line) => void }) {
   const speaking = line.state === "speaking";
   const typed = useTyped(line.text, speaking);
+  // 読み終えた吹き出しだけ、もう一度聞ける (読んでいる間・準備中は出さない)
+  const canReplay = !!onReplay && !!line.replayable && line.state === "done";
   const card = "block w-full rounded-[18px] rounded-bl-[6px] bg-base-100/95 px-3.5 pb-2.5 pt-2 text-left shadow-[0_6px_20px_rgb(41_39_45/0.16)] backdrop-blur-sm";
   const content = (
     <>
-      <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+      <span className={cn("flex items-center gap-1.5 text-[11px] font-semibold text-muted", canReplay && "pe-6")}>
         <SourceMark line={line} />
         <span className="truncate">{lineLabel(line)}</span>
         {speaking && <Bars />}
@@ -139,7 +143,7 @@ function Bubble({ line, onOpen }: { line: Line; onOpen?: (line: Line) => void })
       exit={{ opacity: 0 }}
       transition={{ type: "spring", stiffness: 420, damping: 30 }}
       style={{ transformOrigin: "left bottom" }}
-      className="w-fit min-w-[11rem] max-w-[88%]"
+      className="relative w-fit min-w-[11rem] max-w-[88%]"
     >
       {line.openable && onOpen ? (
         <button
@@ -152,6 +156,17 @@ function Bubble({ line, onOpen }: { line: Line; onOpen?: (line: Line) => void })
         </button>
       ) : (
         <div className={card}>{content}</div>
+      )}
+      {canReplay && (
+        <button
+          type="button"
+          onClick={() => onReplay(line)}
+          aria-label="もう一度聞く"
+          title="もう一度聞く"
+          className="absolute right-2 top-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-150 hover:bg-base-200 hover:text-primary"
+        >
+          <Volume2 className="size-3.5" aria-hidden="true" />
+        </button>
       )}
     </motion.li>
   );
@@ -171,7 +186,7 @@ function loadBubbleArea(): number {
   }
 }
 
-function Feed({ lines, onOpen, expanded, area }: { lines: Line[]; onOpen: (line: Line) => void; expanded: boolean; area: number }) {
+function Feed({ lines, onOpen, onReplay, expanded, area }: { lines: Line[]; onOpen: (line: Line) => void; onReplay: (line: Line) => void; expanded: boolean; area: number }) {
   const reduce = useReducedMotion();
   const scroller = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLOListElement>(null);
@@ -269,7 +284,7 @@ function Feed({ lines, onOpen, expanded, area }: { lines: Line[]; onOpen: (line:
           )}
           <AnimatePresence initial={false}>
             {lines.length
-              ? lines.map((line) => <Bubble key={line.id} line={line} onOpen={onOpen} />)
+              ? lines.map((line) => <Bubble key={line.id} line={line} onOpen={onOpen} onReplay={onReplay} />)
               : (
                   <Bubble
                     key="welcome"
@@ -333,6 +348,8 @@ export function Companion() {
   const [pinned, setPinned] = useState(() => {
     try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; }
   });
+  // 読み上げのオン・オフ (設定画面・メニューバーと同じ設定。どこで変えても追従する)
+  const [speechOn, setSpeechOn] = useState(true);
 
   useEffect(() => {
     let disposed = false;
@@ -371,10 +388,16 @@ export function Companion() {
       changed = true;
       setCast(payload);
     }).then(keep).catch(() => {});
-    invoke<CharactersState & { migrated_from_legacy: boolean }>("get_state")
+    let controlsChanged = false;
+    listen<{ speech_enabled: boolean }>("speech-controls-changed", ({ payload }) => {
+      controlsChanged = true;
+      setSpeechOn(payload.speech_enabled);
+    }).then(keep).catch(() => {});
+    invoke<CharactersState & { migrated_from_legacy: boolean; speech_enabled: boolean }>("get_state")
       .then((s) => {
         if (disposed) return;
         if (!changed) setCast({ characters: s.characters, active_character: s.active_character });
+        if (!controlsChanged) setSpeechOn(s.speech_enabled !== false);
         void migrateLegacyBackground(s);
       })
       .catch(() => {});
@@ -458,6 +481,23 @@ export function Companion() {
     invoke<string>("companion_open", { id: line.id }).catch(() => setNotice(`${lineLabel(line)}を開けませんでした`));
   }, []);
 
+  // 吹き出しの「もう一度聞く」: 読み上げた音声を鳴らし直す (ほかの読み上げと順番に鳴る)
+  const replayLine = useCallback((line: Line) => {
+    invoke("companion_replay", { id: line.id }).catch((e) =>
+      setNotice(e === "off" ? "読み上げをオンにすると聞けます" : "この音声はもう聞けません"),
+    );
+  }, []);
+
+  // 読み上げのオン・オフ。オフにすると、読んでいる途中の音声もすぐ止まる
+  const toggleSpeech = () => {
+    const next = !speechOn;
+    setSpeechOn(next);
+    invoke("set_speech_enabled", { enabled: next }).catch(() => {
+      setSpeechOn(!next);
+      setNotice("読み上げを切り替えられませんでした");
+    });
+  };
+
   // どこをつかんでも小窓を動かせる。吹き出しやボタンは、少し動かした時だけ動かす (そのまま離せば押せる)
   const dragFrom = useRef<{ x: number; y: number } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
@@ -536,6 +576,7 @@ export function Companion() {
         <div className="absolute right-2.5 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
           {[
             { label: "キャラを選ぶ", icon: <UsersRound aria-hidden="true" />, onClick: () => setPicking(true), pressed: undefined },
+            { label: speechOn ? "読み上げをオフにする" : "読み上げをオンにする", icon: speechOn ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />, onClick: toggleSpeech, pressed: speechOn },
             { label: pinned ? "手前に固定をやめる" : "手前に固定", icon: <Pin aria-hidden="true" />, onClick: () => setPinned(!pinned), pressed: pinned },
             { label: "設定を開く", icon: <Settings2 aria-hidden="true" />, onClick: () => void invoke("show_settings").catch(() => {}), pressed: undefined },
           ].map((b) => (
@@ -555,9 +596,19 @@ export function Companion() {
             </button>
           ))}
         </div>
-        {pinned && (
-          <span className="pointer-events-none absolute right-3 top-3 z-10 grid size-4 place-items-center rounded-full bg-primary text-primary-content transition-opacity group-hover:opacity-0" aria-hidden="true">
-            <Pin className="size-2.5" />
+        {/* マウスを乗せていない間も、ふだんと違う状態 (読み上げオフ・手前に固定) は小さな印で見せる */}
+        {(!speechOn || pinned) && (
+          <span className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-1 transition-opacity group-hover:opacity-0" aria-hidden="true">
+            {!speechOn && (
+              <span className="grid size-4 place-items-center rounded-full bg-base-content/75 text-base-100">
+                <VolumeX className="size-2.5" />
+              </span>
+            )}
+            {pinned && (
+              <span className="grid size-4 place-items-center rounded-full bg-primary text-primary-content">
+                <Pin className="size-2.5" />
+              </span>
+            )}
           </span>
         )}
 
@@ -594,7 +645,7 @@ export function Companion() {
           )}
         </AnimatePresence>
 
-        <Feed lines={lines} onOpen={openLine} expanded={(focused || picking) && !adjusting} area={area} />
+        <Feed lines={lines} onOpen={openLine} onReplay={replayLine} expanded={(focused || picking) && !adjusting} area={area} />
 
         {/* キャラを選ぶシート (吹き出しの範囲もここで変える) */}
         <AnimatePresence>

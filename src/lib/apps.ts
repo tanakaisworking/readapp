@@ -12,26 +12,29 @@ export const KNOWN_APPS: KnownApp[] = catalog.apps;
 
 export interface Voice {
   id: string;
+  /** 選ぶ時に見せる名前。声の特徴で書く (固有の名前はユーザーには手がかりにならない) */
   name: string;
+  /** 補足 (どこの声か・元の名前) */
   tagline: string;
   premium: boolean;
 }
 
 export const VOICES: Voice[] = [
-  { id: "system", name: "システム音声", tagline: "いつもの声", premium: false },
-  { id: "clear", name: "クリア", tagline: "抜けのいい声", premium: true },
-  { id: "warm", name: "ウォーム", tagline: "寄り添う声", premium: true },
+  { id: "system", name: "Macの標準の声", tagline: "システム音声 · いつもの声", premium: false },
+  { id: "clear", name: "抜けのいい声", tagline: "クリア", premium: true },
+  { id: "warm", name: "寄り添う声", tagline: "ウォーム", premium: true },
 ];
 
+// Geminiの声。特徴はGoogleの声の説明 (Kore=Firm, Aoede=Breezy, Puck=Upbeat, Charon=Informative) に合わせる
 export const CLOUD_VOICES: Voice[] = [
-  { id: "cloud:Kore", name: "Kore", tagline: "落ち着いた声 · Gemini", premium: false },
-  { id: "cloud:Aoede", name: "Aoede", tagline: "軽やかな声 · Gemini", premium: false },
-  { id: "cloud:Puck", name: "Puck", tagline: "明るい声 · Gemini", premium: false },
-  { id: "cloud:Charon", name: "Charon", tagline: "語りかける声 · Gemini", premium: false },
+  { id: "cloud:Kore", name: "しっかり落ち着いた声", tagline: "Gemini · Kore · 試用接続", premium: false },
+  { id: "cloud:Aoede", name: "軽やかな声", tagline: "Gemini · Aoede · 試用接続", premium: false },
+  { id: "cloud:Puck", name: "明るく弾む声", tagline: "Gemini · Puck · 試用接続", premium: false },
+  { id: "cloud:Charon", name: "語りかける声", tagline: "Gemini · Charon · 試用接続", premium: false },
 ];
 
 export const GEMINI_VOICES: Voice[] = CLOUD_VOICES.map((voice) => ({
-  ...voice, id: voice.id.replace("cloud:", "gemini:"), tagline: voice.tagline.replace("Gemini", "自分のAPIキー"),
+  ...voice, id: voice.id.replace("cloud:", "gemini:"), tagline: voice.tagline.replace("試用接続", "自分のAPIキー"),
 }));
 
 export interface Persona {

@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronLeft, ImagePlus, Play, Trash2 } from "lucide-react";
+import { AppAvatar } from "@/components/app-avatar";
 import { CharacterImage } from "@/components/character-image";
 import { LiveCharacter } from "@/components/live-character";
-import { GeminiKeySettings } from "@/components/gemini-key-settings";
 import { PremiumSheet } from "@/components/premium-sheet";
 import { SpeechIssueNotice } from "@/components/speech-issue-notice";
 import { VoiceOption } from "@/components/voice-option";
-import type { SettingsApi } from "@/hooks/useSettings";
-import type { FullState, Persona } from "@/lib/apps";
+import { isOn, type SettingsApi } from "@/hooks/useSettings";
+import { KNOWN_APPS, knownApp, type FullState, type Persona, type Voice } from "@/lib/apps";
 import {
   IMAGE_EXTENSIONS,
   NAME_MAX,
@@ -21,7 +23,7 @@ import {
   styleSample,
   type Character,
 } from "@/lib/characters";
-import { voiceOptions, type SystemVoice } from "@/lib/voices";
+import { effectiveVoice, voiceOptions, type SystemVoice } from "@/lib/voices";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -58,8 +60,10 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
     systemVoices,
     geminiConfigured: !!api.geminiByok?.configured,
     cloudConfigured: api.cloudTtsConfigured,
+    cloudVoices: api.cloudVoices,
     current: character.voice,
   });
+  const voice = effectiveVoice(character.voice, api.cloudVoices);
   const issue = api.speechIssue;
 
   const save = async (patch: Partial<Character>, preview = false) => {
@@ -89,7 +93,7 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
     const next = voicePrompt.trim();
     if (next !== character.voice_prompt || preview) void save({ voice_prompt: next }, preview);
   };
-  const promptInUse = usesVoicePrompt(character.voice);
+  const promptInUse = api.cloudVoices && usesVoicePrompt(character.voice);
 
   const pickFile = async () => {
     const picked = await open({ multiple: false, directory: false, filters: [{ name: "画像", extensions: IMAGE_EXTENSIONS }] }).catch(() => null);
@@ -124,7 +128,9 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
     { id: STYLE_RAW, label: "通知をそのまま読む", sample: styleSample(STYLE_RAW) },
     { id: STYLE_CUSTOM, label: "自分で書く", sample: null },
   ];
-  const hasCustom = character.image === "custom" && !!customs[character.id];
+  const hasCustom = !!customs[character.id];
+  // 画像とキャラは結びついているので、ほかのキャラの画像は出さない (専用の画像と、取り込んだ画像だけ)
+  const base = PRESET_IMAGES.find((p) => p.image === character.base_image);
 
   return (
     <div className="space-y-5 px-4 pb-6 pt-3">
@@ -172,13 +178,13 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
 
       <section aria-labelledby="character-image-heading">
         <h2 id="character-image-heading" className="section-label">画像</h2>
-        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">小窓の背景になります。</p>
+        <p className="mt-1 px-1 text-xs leading-relaxed text-muted">このキャラ専用の画像です。小窓の背景になります。自分の画像に差し替えることもできます。</p>
         <ul className="surface mt-2 grid grid-cols-4 gap-2 p-3">
-          {PRESET_IMAGES.map((p) => (
-            <ImageTile key={p.id} name={p.name} src={p.src} live={p.live} selected={character.image === p.image} onSelect={() => void save({ image: p.image })} />
-          ))}
+          {base && (
+            <ImageTile name="このキャラの画像" src={base.src} live={base.live} selected={character.image === base.image} onSelect={() => void save({ image: base.image })} />
+          )}
           {hasCustom && (
-            <ImageTile name="自分の画像" src={customs[character.id] ?? ""} selected={character.image === "custom"} onSelect={() => {}} />
+            <ImageTile name="自分の画像" src={customs[character.id] ?? ""} selected={character.image === "custom"} onSelect={() => void save({ image: "custom" })} />
           )}
           <li>
             <button
@@ -244,20 +250,28 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
         <h2 id="character-voice-heading" className="section-label">声</h2>
         <div className="surface mt-2 space-y-3 p-1.5">
           {issue?.voice_id.startsWith("cloud:") && <div className="px-2 pt-2"><SpeechIssueNotice issue={issue} compact /></div>}
-          <ul className="space-y-0.5">
-            {voices.map((v) => (
-              <VoiceOption
-                key={v.id}
-                name={v.name}
-                note={v.tagline}
-                premium={v.premium}
-                selected={character.voice === v.id}
-                disabled={v.id.startsWith("gemini:") && !api.geminiByok?.configured}
-                onSelect={() => pickVoice(v.id, v.name, v.premium)}
-              />
-            ))}
-          </ul>
-          <div className="border-t border-base-content/10 px-2.5 pb-1 pt-3">
+          {voiceGroups(voices).map((g) => (
+            <div key={g.label}>
+              <p className="px-3 pb-0.5 pt-2 text-[11px] font-semibold text-muted">{g.label}</p>
+              <ul className="space-y-0.5">
+                {g.voices.map((v) => (
+                  <VoiceOption
+                    key={v.id}
+                    name={v.name}
+                    note={v.tagline.replace(/^(Gemini|Macの声) · /, "").replace(/ · (自分のAPIキー|試用接続)$/, "")}
+                    premium={v.premium}
+                    selected={voice === v.id}
+                    disabled={v.id.startsWith("gemini:") && !api.geminiByok?.configured}
+                    onSelect={() => pickVoice(v.id, v.name, v.premium)}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))}
+          {api.geminiByok?.supported && !api.geminiByok.configured && (
+            <p className="px-3 text-xs leading-relaxed text-muted">Geminiの声は、設定のトップの「Geminiの声」で自分のAPIキーを登録すると選べます。</p>
+          )}
+          {api.cloudVoices && <div className="border-t border-base-content/10 px-2.5 pb-1 pt-3">
             <label htmlFor="character-voice-prompt" className="block text-[13px] font-medium">声の出し方</label>
             <p className="mt-0.5 text-xs leading-relaxed text-muted">Geminiの声で読む時に、声の高さ・速さ・気持ちをこのように演じます。読む内容は変わりません。</p>
             <textarea
@@ -280,16 +294,14 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
                 この声で試す
               </button>
             )}
-          </div>
-          <div className="space-y-2 px-2.5 pb-2.5">
-            {api.cloudTtsConfigured && <p className="text-xs leading-relaxed text-muted">「試用接続」の声はreadappのWorker経由でGoogleへ文章を送ります。</p>}
-            {character.voice.startsWith("gemini:") && api.geminiByok && !api.geminiByok.configured && (
-              <p className="text-xs leading-relaxed text-muted">Geminiの声を使うにはAPIキーを登録してください。未登録の間はシステム音声で読み上げます。</p>
-            )}
-            <GeminiKeySettings api={api} />
-          </div>
+          </div>}
+          {api.cloudVoices && character.voice.startsWith("gemini:") && api.geminiByok && !api.geminiByok.configured && (
+            <p className="px-2.5 pb-2.5 text-xs leading-relaxed text-muted">APIキーが未登録の間は、Macの標準の声で読み上げます。</p>
+          )}
         </div>
       </section>
+
+      <ReadsSection api={api} state={state} character={character} />
 
       {state.characters.length > 1 && (
         <section aria-label="キャラの削除" className="pt-1">
@@ -310,6 +322,20 @@ export function CharacterEditor({ api, state, personas, characterId, customs, sy
       <PremiumSheet voiceName={premiumVoice} onClose={() => setPremiumVoice(null)} />
     </div>
   );
+}
+
+/** 声の一覧を、どこの声かでまとめる (並びは voiceOptions のまま) */
+function voiceGroups(voices: Voice[]): { label: string; voices: Voice[] }[] {
+  const groupOf = (v: Voice) =>
+    v.id.startsWith("gemini:") ? "Geminiの声（自分のAPIキー）" : v.id.startsWith("cloud:") ? "Geminiの声（試用接続）" : v.premium ? "プレミアムの声" : "Macの声";
+  const groups: { label: string; voices: Voice[] }[] = [];
+  for (const v of voices) {
+    const label = groupOf(v);
+    const last = groups[groups.length - 1];
+    if (last?.label === label) last.voices.push(v);
+    else groups.push({ label, voices: [v] });
+  }
+  return groups;
 }
 
 function ImageTile({ name, src, live = false, selected, onSelect }: { name: string; src: string; live?: boolean; selected: boolean; onSelect: () => void }) {
@@ -336,5 +362,73 @@ function ImageTile({ name, src, live = false, selected, onSelect }: { name: stri
         <span className="mt-1 block truncate text-center text-[10px] font-medium text-muted">{name}</span>
       </button>
     </li>
+  );
+}
+
+/** このキャラが読むアプリ。読み上げるアプリごとに、このキャラを担当にするかを切り替える */
+function ReadsSection({ api, state, character }: { api: SettingsApi; state: FullState; character: Character }) {
+  const global = state.characters.find((c) => c.id === state.active_character) ?? state.characters[0];
+  const isGlobal = global?.id === character.id;
+  // 通知を受け取ったことのあるアプリ (ショートカット経由のアプリは enabled に入らないことがある)
+  const [observed, setObserved] = useState<{ id: string; name: string; shortcut: boolean }[]>([]);
+  useEffect(() => {
+    let disposed = false;
+    let off: (() => void) | undefined;
+    const refresh = () =>
+      invoke<{ id: string; name: string; shortcut: boolean }[]>("get_observed_apps").then((a) => !disposed && setObserved(a)).catch(() => {});
+    void refresh();
+    // 編集中に新しい通知元から届いたら、一覧に足す
+    listen("observed-changed", () => void refresh())
+      .then((f) => (disposed ? f() : (off = f)))
+      .catch(() => {});
+    return () => { disposed = true; off?.(); };
+  }, []);
+  const extraIds = [...new Set([...Object.keys(state.enabled), ...Object.keys(state.app_characters), ...observed.map((o) => o.id)])]
+    .filter((id) => id !== "readapp" && id !== "preview" && !KNOWN_APPS.some((a) => a.id === id));
+  // 実際に読むか (Rust の should_speak と同じ条件): すべての通知を読む時は全部。アプリ別の設定があればそれ。
+  // 無ければカタログのアプリと、ショートカット経由で届いたアプリ (直接監視だけで届いたアプリは読まない)
+  const reads = (id: string) =>
+    state.speak_all || (state.enabled[id] ?? (isOn(state, id) || observed.some((o) => o.id === id && o.shortcut)));
+  const apps = [...KNOWN_APPS, ...extraIds.map((id) => ({ ...knownApp(id), name: observed.find((o) => o.id === id)?.name ?? knownApp(id).name }))]
+    // 担当が決まっているアプリは、どのキャラが担当でも残す (受信履歴は起動中だけなので、再起動後も担当を変えられるように)
+    .filter((a) => reads(a.id) || a.id in state.app_characters);
+  const readerOf = (id: string) => state.characters.find((c) => c.id === state.app_characters[id]);
+  return (
+    <section aria-labelledby="character-reads-heading">
+      <h2 id="character-reads-heading" className="section-label">読むアプリ</h2>
+      <p className="mt-1 px-1 text-xs leading-relaxed text-muted">
+        {isGlobal ? "全体のキャラなので、担当を決めていないアプリはこのキャラが読みます。" : "チェックしたアプリの通知を、このキャラが読みます。"}
+      </p>
+      {apps.length ? (
+        <ul className="surface mt-2 space-y-0.5 p-1.5">
+          {apps.map((app) => {
+            const name = state.names[app.id] ?? app.name;
+            const reader = readerOf(app.id);
+            const mine = reader?.id === character.id;
+            const note = mine ? "このキャラが担当" : reader ? reader.name + "が担当" : isGlobal ? "全体のキャラとして読む" : "全体のキャラ（" + (global?.name ?? "") + "）が読む";
+            return (
+              <li key={app.id}>
+                <label className="flex cursor-pointer items-center gap-3 rounded-field px-3 py-2 transition-colors duration-150 hover:bg-base-200">
+                  <AppAvatar id={app.id} name={name} color={app.color} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{name}</span>
+                    <span className="block truncate text-xs text-muted">{note}</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-primary checkbox-sm"
+                    checked={mine}
+                    onChange={(e) => void api.setAppCharacter(app.id, e.target.checked ? character.id : null)}
+                    aria-label={name + "をこのキャラが読む"}
+                  />
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="surface mt-2 p-3 text-xs leading-relaxed text-muted">読み上げるアプリは、設定のトップの「読み上げ担当」で選べます。</p>
+      )}
+    </section>
   );
 }

@@ -6,7 +6,7 @@ import { AppAvatar } from "@/components/app-avatar";
 import { CharacterImage } from "@/components/character-image";
 import { knownApp, type Persona } from "@/lib/apps";
 import { styleLabel, type Character } from "@/lib/characters";
-import { voiceName, type SystemVoice } from "@/lib/voices";
+import { effectiveVoice, voiceName, type SystemVoice } from "@/lib/voices";
 import { cn } from "@/lib/utils";
 import { isOn, type SettingsApi } from "@/hooks/useSettings";
 import type { FullState } from "@/lib/apps";
@@ -120,7 +120,7 @@ export function AppDetail({ api, state, appId, platform, edition, speaking, pers
       : { label: "未登録", tone: "badge-ghost" };
   const characterChoices: { id: string | null; name: string; note: string; character: Character | undefined }[] = [
     { id: null, name: "全体のキャラに任せる", note: activeCharacter ? "今は" + activeCharacter.name + "が読みます" : "", character: activeCharacter },
-    ...state.characters.map((c) => ({ id: c.id as string | null, name: c.name, note: voiceName(c.voice, systemVoices) + " · " + styleLabel(c.style, personas), character: c })),
+    ...state.characters.map((c) => ({ id: c.id as string | null, name: c.name, note: voiceName(effectiveVoice(c.voice, api.cloudVoices), systemVoices) + " · " + styleLabel(c.style, personas), character: c })),
   ];
 
   return (

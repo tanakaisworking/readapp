@@ -13,8 +13,8 @@ private let log = Logger(subsystem: "com.hibachi.readapp", category: "intent")
 func readapp_intent_speak(_ app: UnsafePointer<CChar>, _ text: UnsafePointer<CChar>)
 
 struct SpeakIntent: AppIntent {
-    static let title: LocalizedStringResource = "readappで読み上げる"
-    static let description = IntentDescription("通知などのテキストを、readappのキャラと声で読み上げます。")
+    static let title: LocalizedStringResource = "Readappで読み上げる"
+    static let description = IntentDescription("通知などのテキストを、Readappのキャラと声で読み上げます。")
     // 前面に出さずに裏で処理する
     static let openAppWhenRun: Bool = false
 
@@ -29,7 +29,7 @@ struct SpeakIntent: AppIntent {
     var appName: String?
 
     static var parameterSummary: some ParameterSummary {
-        Summary("readappで\(\.$text)を読み上げる") {
+        Summary("Readappで\(\.$text)を読み上げる") {
             \.$appName
         }
     }
@@ -123,6 +123,45 @@ public func readapp_login_item_set(_ enabled: Bool) -> Int32 {
 @_cdecl("readapp_open_login_items_settings")
 public func readapp_open_login_items_settings() {
     SMAppService.openSystemSettingsLoginItems()
+}
+
+/// Readapp自身の通知の許可: 0=まだ聞いていない / 1=オフ / 2=オン (仮のオンも含む)
+/// 一度も許可を求めていないアプリは、システム設定の「通知」の一覧に出てこない (2026-10-29 このMacで確認)
+@_cdecl("readapp_notification_status")
+public func readapp_notification_status() -> Int32 {
+    let done = DispatchSemaphore(value: 0)
+    var result: Int32 = 0
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+        switch settings.authorizationStatus {
+        case .notDetermined: result = 0
+        case .denied: result = 1
+        default: result = 2
+        }
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + 5)
+    return result
+}
+
+/// 通知の許可を求める (まだ聞いていなければ確認が出る)。答えを待って、許可されたら true。
+/// 求めることで、システム設定の「通知」の一覧にReadappが載る。メインスレッド以外から呼ぶこと。
+@_cdecl("readapp_request_notifications")
+public func readapp_request_notifications() -> Bool {
+    let done = DispatchSemaphore(value: 0)
+    var granted = false
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { ok, _ in
+        granted = ok
+        done.signal()
+    }
+    _ = done.wait(timeout: .now() + 120)
+    return granted
+}
+
+/// システム設定の画面を開く (x-apple.systempreferences: のURL)。サンドボックス (MAS版) でも使えるよう NSWorkspace で開く
+@_cdecl("readapp_open_settings_url")
+public func readapp_open_settings_url(_ url: UnsafePointer<CChar>) {
+    guard let target = URL(string: String(cString: url)), target.scheme == "x-apple.systempreferences" else { return }
+    DispatchQueue.main.async { NSWorkspace.shared.open(target) }
 }
 
 /// readappが前面にいる時もテスト通知をバナー表示する (既定では前面アプリの通知は出ない)。

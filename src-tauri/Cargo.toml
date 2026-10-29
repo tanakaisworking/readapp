@@ -17,6 +17,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 # MAS配布版 (サンドボックス)。直接監視を外し、ショートカット経由のみにする。
 mas = []
+# Geminiの声 (自分のAPIキー) と、こちらのサーバー (Worker) 経由の声。いまは配布版に入れない (2026-10-29)。
+# 戻すときはこの機能を付けてビルドする (npx tauri build --features cloud-voices)
+cloud-voices = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

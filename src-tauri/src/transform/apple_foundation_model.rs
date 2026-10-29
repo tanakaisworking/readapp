@@ -8,6 +8,18 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Apple Intelligence の状態: "available" / "disabled" (オフ) / "not_ready" (準備中) / "unsupported" (非対応のMac) / "unavailable"
+pub fn availability(helper: &Path) -> String {
+    let out = Command::new(helper).arg("--availability").stdin(Stdio::null()).stderr(Stdio::null()).output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if ["available", "disabled", "not_ready", "unsupported"].contains(&s.as_str()) { s } else { "unavailable".to_string() }
+        }
+        _ => "unavailable".to_string(),
+    }
+}
+
 pub fn transform(text: &str, instruction: &str, helper: &Path) -> Result<String, String> {
     let mut child = Command::new(helper)
         .arg(instruction)

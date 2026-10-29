@@ -40,6 +40,8 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [cooling, setCooling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Readapp自身の通知が許可されていない (システム設定の「通知」を開くボタンを出す)
+  const [denied, setDenied] = useState(false);
   const busy = useRef(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const alive = useRef(true);
@@ -80,15 +82,17 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
     busy.current = true; // 許可の確認待ちの間も二重に送らない
     setStatus("sending");
     setError(null);
+    setDenied(false);
     const before = await readappCount();
     try {
       await invoke("send_test_notification", { text: body });
     } catch (e) {
       busy.current = false;
       setStatus("idle");
+      setDenied(e === "denied");
       setError(
         e === "denied"
-          ? "readappの通知がオフです。システム設定の「通知」で readapp を許可すると、通知として試せます。"
+          ? "Readappの通知がオフです。「通知の設定を開く」で Readapp の通知をオンにすると、通知として試せます。"
           : "通知を出せませんでした。",
       );
       return;
@@ -141,9 +145,14 @@ export function TrySpeak({ platform, edition, onDirect }: Props) {
           <p>
             {error ??
               (edition === "mas"
-                ? "通知が readapp に届きませんでした。ショートカット「readapp通知」がオンか確かめてください。まだなら「読み上げるアプリ」の「ほかのアプリを読み上げる」から追加できます。"
-                : "通知が readapp に届きませんでした。「直接監視」を許可しているか確かめてください。")}
+                ? "通知が Readapp に届きませんでした。ショートカット「readapp通知」がオンか確かめてください。まだなら「読み上げるアプリ」の「ほかのアプリを読み上げる」から追加できます。"
+                : "通知が Readapp に届きませんでした。「直接監視」を許可しているか確かめてください。")}
           </p>
+          {denied && (
+            <button type="button" className="btn btn-sm mt-2" onClick={() => void invoke("open_system_settings", { pane: "notifications" }).catch(() => {})}>
+              通知の設定を開く
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-ghost btn-xs mt-1.5 -ms-2"

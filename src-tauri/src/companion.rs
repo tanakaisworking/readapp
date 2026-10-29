@@ -1,10 +1,11 @@
 //! 普段見せる小窓 (companion)。読み上げた「ひとこと」を直近分だけメモリに持ち、小窓へ届ける。
-//! 本文は保存しない (アプリを終了すれば消える)。キャラに取り込んだ画像だけをアプリのデータフォルダに置く。
+//! 本文と、吹き出しから鳴らし直すための音声は保存しない (メモリだけに持ち、アプリを終了すれば消える)。
+//! キャラに取り込んだ画像だけをアプリのデータフォルダに置く。
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use serde::Serialize;
@@ -14,6 +15,8 @@ use tauri::{AppHandle, Emitter, Manager};
 pub(crate) const WINDOW: &str = "companion";
 /// 小窓でさかのぼれる件数 (メモリだけに持つ)
 const FEED_LIMIT: usize = 100;
+/// 鳴らし直すために持っておく音声の合計の上限。超えたら古い吹き出しから鳴らし直せなくする
+const AUDIO_BUDGET: usize = 32 * 1024 * 1024;
 /// 背景にできる画像 (WebView がどのOSでも表示できる形式)
 const IMAGE_TYPES: [(&str, &str); 5] = [
     ("png", "image/png"),
@@ -41,6 +44,24 @@ pub(crate) enum LineState {
     Silent,
 }
 
+/// 吹き出しから鳴らし直すための音声
+#[derive(Clone, Debug)]
+pub(crate) enum Replay {
+    /// 作った音声 (Geminiの声・試用接続のWAV)。鳴らし直してもお金はかからない
+    Audio(Arc<Vec<u8>>),
+    /// システム音声。同じ文章をこの声で読み直す (同じ音になる)
+    Say(String),
+}
+
+impl Replay {
+    fn bytes(&self) -> usize {
+        match self {
+            Replay::Audio(audio) => audio.len(),
+            Replay::Say(_) => 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Line {
     id: u64,
@@ -52,6 +73,10 @@ pub(crate) struct Line {
     state: LineState,
     /// 吹き出しを押すと、通知か送ってきたアプリを開ける
     openable: bool,
+    /// 読み上げた音声を鳴らし直せる
+    replayable: bool,
+    #[serde(skip)]
+    replay: Option<Replay>,
     /// 直接監視で拾った通知バナーのID。画面へは送らない
     #[serde(skip)]
     #[cfg_attr(not(direct_capture), allow(dead_code))]
@@ -99,6 +124,8 @@ pub(crate) fn record(source: &Source, text: &str, speaking: bool) -> u64 {
         at: now_ms(),
         state: if speaking { LineState::Queued } else { LineState::Silent },
         openable: source.openable,
+        replayable: false,
+        replay: None,
         banner: source.banner.map(str::to_string),
     };
     if let Ok(mut feed) = FEED.lock() {
@@ -124,6 +151,54 @@ pub(crate) fn mark(id: u64, state: LineState) {
     if let Some(line) = updated {
         emit("companion-line", line);
     }
+}
+
+/// 読み上げた音声を吹き出しに紐づける (話し始める直前に呼ぶ。小窓へは次の mark で伝わる)。
+/// 音声の合計が上限を超えたら、古い吹き出しから鳴らし直せなくする。
+pub(crate) fn keep_replay(id: u64, replay: Replay) {
+    let dropped = FEED.lock().map(|mut feed| keep_in(&mut feed, id, replay)).unwrap_or_default();
+    for line in dropped {
+        emit("companion-line", line);
+    }
+}
+
+/// keep_replay の中身。鳴らし直せなくなった行を返す
+fn keep_in(feed: &mut VecDeque<Line>, id: u64, replay: Replay) -> Vec<Line> {
+    let Some(line) = feed.iter_mut().find(|l| l.id == id) else {
+        return Vec::new();
+    };
+    line.replay = Some(replay);
+    line.replayable = true;
+    let mut total = 0;
+    let mut dropped = Vec::new();
+    for line in feed.iter_mut().rev() {
+        total += line.replay.as_ref().map_or(0, Replay::bytes);
+        // 登録した行も数える (古い行へ後から登録されても上限を超えて残らないように)
+        if total > AUDIO_BUDGET && line.replay.as_ref().is_some_and(|r| r.bytes() > 0) {
+            line.replay = None;
+            line.replayable = false;
+            dropped.push(line.clone());
+        }
+    }
+    dropped
+}
+
+/// 吹き出しから、読み上げた音声を鳴らし直す。読み上げを止めている間は "off"、音声がもう無ければ "gone"。
+#[tauri::command]
+pub(crate) fn companion_replay(id: u64) -> Result<(), String> {
+    let (text, replay) = FEED
+        .lock()
+        .ok()
+        .and_then(|feed| feed.iter().find(|l| l.id == id).and_then(|l| Some((l.text.clone(), l.replay.clone()?))))
+        .ok_or("gone")?;
+    let request = crate::speech::system::request().ok_or("off")?;
+    // 順番待ちの間は準備中に戻す (鳴り始めたら話している、になる)
+    mark(id, LineState::Queued);
+    if !crate::speech::system::replay(&text, replay, request, id) {
+        mark(id, LineState::Done);
+        return Err("off".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -361,5 +436,38 @@ mod tests {
         let line = companion_feed().into_iter().find(|l| l.id == silent).unwrap();
         assert_eq!(line.state, LineState::Silent);
         assert_eq!(companion_open(silent), Err("not_openable".to_string()));
+    }
+
+    #[test]
+    fn kept_audio_stays_within_budget_and_drops_oldest_first() {
+        let line = |id: u64| Line {
+            id,
+            app_id: "claude".into(),
+            app_name: None,
+            text: String::new(),
+            at: 0,
+            state: LineState::Done,
+            openable: false,
+            replayable: false,
+            replay: None,
+            banner: None,
+        };
+        let mut feed: VecDeque<Line> = (1..=4).map(line).collect();
+        let audio = || Replay::Audio(Arc::new(vec![0; AUDIO_BUDGET / 2]));
+        assert!(keep_in(&mut feed, 1, audio()).is_empty());
+        assert!(keep_in(&mut feed, 2, Replay::Say("system".into())).is_empty());
+        assert!(keep_in(&mut feed, 3, audio()).is_empty());
+        // 3つ目の音声で上限を超える: いちばん古い音声 (1) だけを外し、読み直す声 (2) と新しい音声は残す
+        let dropped = keep_in(&mut feed, 4, audio());
+        assert_eq!(dropped.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1]);
+        assert!(!feed[0].replayable && feed[0].replay.is_none());
+        assert!(feed[1].replayable && feed[2].replayable && feed[3].replayable);
+        // 知らない行には何もしない
+        assert!(keep_in(&mut feed, 99, audio()).is_empty());
+        // 古い行へ後から登録されても、合計は上限を超えない (その行も外す)
+        let dropped = keep_in(&mut feed, 1, audio());
+        assert_eq!(dropped.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1]);
+        let total: usize = feed.iter().filter_map(|l| l.replay.as_ref()).map(Replay::bytes).sum();
+        assert!(total <= AUDIO_BUDGET);
     }
 }

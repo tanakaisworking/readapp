@@ -219,8 +219,8 @@ export function useSettings() {
   }, []);
 
   const speak = useCallback(
-    async (appId: string, title: string, body: string, characterId?: string): Promise<string> => {
-      return invoke<string>("test_speak", { appId, title, body, characterId: characterId ?? null });
+    async (appId: string, title: string, body: string, characterId?: string, preset?: string, verbatim = false): Promise<string> => {
+      return invoke<string>("test_speak", { appId, title, body, characterId: characterId ?? null, preset: preset ?? null, verbatim });
     },
     [],
   );
@@ -232,6 +232,8 @@ export function useSettings() {
     personas,
     presets,
     cloudTtsConfigured,
+    // Geminiの声・サーバー経由の声を使える版か (Rust の Cargo feature cloud-voices。外した版では両方 false)
+    cloudVoices: geminiByok?.supported === true || cloudTtsConfigured,
     geminiByok,
     geminiByokError,
     speechIssue,

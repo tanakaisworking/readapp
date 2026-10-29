@@ -15,12 +15,17 @@ export interface Character {
   style_note: string;
   /** Geminiの声で読む時の声の出し方 (声の高さ・速さ・気持ちなど)。システム音声では使わない */
   voice_prompt: string;
+  /** このキャラ専用の画像 ("preset:<id>")。画像とキャラは結びついていて、選べるのはこれか取り込んだ画像だけ */
+  base_image: string;
 }
 
 export interface CharactersState {
   characters: Character[];
   active_character: string;
 }
+
+/** オンボーディングの最後にキャラが言うあいさつ (話し方で言い換えずに読む) */
+export const ONBOARDING_GREETING = "こんにちは、これからよろしくね！";
 
 export const STYLE_RAW = "raw";
 export const STYLE_CUSTOM = "custom";
@@ -65,10 +70,11 @@ export function characterSrc(character: Character | undefined, customs: Record<s
   return custom ?? FALLBACK_IMAGE;
 }
 
-/** 取り込んだ画像 (image が "custom" のキャラ) を読み込む。差し替えられたら読み直す */
+/** 取り込んだ画像を読み込む (無いキャラは null)。差し替えられたら読み直す */
 export function useCustomImages(characters: Character[] | undefined): Record<string, string | null | undefined> {
   const [images, setImages] = useState<Record<string, string | null | undefined>>({});
-  const ids = (characters ?? []).filter((c) => c.image === "custom").map((c) => c.id).join(",");
+  // 専用の画像に戻していても、取り込んだ画像は残っていれば読み込む (編集でまた選べるように)
+  const ids = (characters ?? []).map((c) => c.id).join(",");
 
   useEffect(() => {
     let disposed = false;

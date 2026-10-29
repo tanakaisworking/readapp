@@ -7,7 +7,7 @@ const ACCOUNT: &str = "api-key";
 static ACCESS: Mutex<()> = Mutex::new(());
 
 pub fn supported() -> bool {
-    cfg!(target_os = "macos")
+    super::CLOUD_VOICES && cfg!(target_os = "macos")
 }
 
 pub fn valid(key: &str) -> bool {

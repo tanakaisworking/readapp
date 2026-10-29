@@ -57,8 +57,13 @@ MAS版の通知の受け取り方 (2026-10-06 実装・実機確認):
 - カレンダーの通知は中身 (タイトル・本文・アプリ) がショートカットに渡らないため対象外。予定の読み上げは EventKit で別途
 - 部品は `/Applications` か `~/Applications` に置いたアプリからしか登録されない (一時フォルダは対象外)
 
-MAS配布の残作業: Mac App Store用 provisioning profile取得（App ID `com.hibachi.readapp` 登録）、
-App Store Connect登録。証明書（3rd Party Mac Developer Application/Installer）は発行済み。詳細は `scripts/package-mas.sh`。
+MAS配布の手順と残作業 (2026-10-29 時点):
+
+- 最初の配布版には、Geminiの声 (自分のAPIキー) とサーバー経由の声を入れない。Cargo feature `cloud-voices` を付けない限り、画面にも出さず、選んでいたキャラもMacの標準の声で読む
+- 証明書 (3rd Party Mac Developer Application/Installer) は発行済み
+- 残り (Apple のアカウントで行う): App ID `com.hibachi.readapp` の登録、Mac App Store用 provisioning profile の発行、App Store Connect にアプリを作る
+- 提出用の .pkg: `MAS_PROFILE=<profileのパス> npm run package:mas` → `src-tauri/target/release/bundle/macos/Readapp-mas.pkg`。手元確認は `npm run package:mas -- --local`
+- 提出時に用意するもの: スクリーンショット、説明文、サポートURL、プライバシーポリシーのURL、App Privacy の申告 (読み上げログを PostHog へ送る。本文は送らない)、審査メモ (ショートカットの通知オートメーションの設定手順)
 
 Windowsは `Windows.UI.Notifications.Management`（UserNotificationListener）が公式capabilityで、アプリ識別・通知本文・リアルタイムイベントまで公開APIで取得できる。Macのdmg版はAX監視、MAS版はShortcuts経由で、同じUI/サービスに流す。
 

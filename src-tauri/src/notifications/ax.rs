@@ -66,8 +66,10 @@ pub fn request_prompt() -> bool {
     }
 }
 
-/// アクセシビリティ設定画面を開く。
+/// アクセシビリティ設定画面を開く。一度も問い合わせていないと一覧にReadappが出ないので、
+/// 先に確認つきで問い合わせてから開く (Reki noteと同じ考え方。2回目以降は確認は出ない)
 pub fn open_settings() {
+    let _ = request_prompt();
     let _ = std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
         .status();

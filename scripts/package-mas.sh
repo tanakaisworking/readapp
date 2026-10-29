@@ -14,7 +14,7 @@ TEAM="TYX92DB6TA"
 BUNDLE_ID="com.hibachi.readapp"
 ENT="src-tauri/entitlements/mas.plist"
 HELPER_ENT="src-tauri/entitlements/mas-helper.plist"
-APP="src-tauri/target/release/bundle/macos/readapp.app"
+APP="src-tauri/target/release/bundle/macos/Readapp.app"
 HELPER="$APP/Contents/Resources/binaries/fm-helper-aarch64-apple-darwin"
 
 LOCAL=0
@@ -35,7 +35,7 @@ else
   APP_ID_NAME="3rd Party Mac Developer Application: HIBACHI inc. ($TEAM)"
 fi
 
-# 直接監視 (Accessibility) を外したビルド
+# 直接監視 (Accessibility) と、Geminiの声・サーバー経由の声 (cloud-voices) を外したビルド
 npx tauri build --config src-tauri/tauri.mas.conf.json --features mas --bundles app
 
 # 内側から署名する (--deep はヘルパーにアプリ用entitlementsを付けてしまうので使わない)
@@ -58,7 +58,7 @@ codesign --force --options runtime --entitlements "$STORE_ENT" --sign "$APP_ID_N
 rm -f "$STORE_ENT"
 codesign --verify --strict "$APP"
 
-PKG="src-tauri/target/release/bundle/macos/readapp-mas.pkg"
+PKG="src-tauri/target/release/bundle/macos/Readapp-mas.pkg"
 productbuild --component "$APP" /Applications \
   --sign "3rd Party Mac Developer Installer: HIBACHI inc. ($TEAM)" \
   "$PKG"

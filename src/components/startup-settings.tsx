@@ -55,7 +55,7 @@ export function StartupSettings({ api, state }: { api: SettingsApi; state: FullS
               <label htmlFor="readapp-login-item" className="block text-sm font-medium">ログイン時に起動</label>
               <p className="text-xs leading-relaxed text-muted">
                 {loginItem === "requires_approval"
-                  ? "システム設定の「ログイン項目」で、readappを許可してください。"
+                  ? "システム設定の「ログイン項目」で、Readappを許可してください。"
                   : "Macにログインしたら、メニューバーに常駐します。"}
               </p>
               {loginItem === "requires_approval" && (
